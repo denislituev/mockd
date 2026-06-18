@@ -1,0 +1,121 @@
+# Example mockd configuration.
+#
+# Start it with:
+#     mockd serve examples/users.yaml
+#
+# Then try:
+#     curl http://localhost:8080/health
+#     curl http://localhost:8080/users/42
+#     curl "http://localhost:8080/users?role=admin"
+#     curl -H "X-Tenant-Id: tenant-a" http://localhost:8080/users
+
+listen: ":8080"
+
+routes:
+  # Simple health-check endpoint.
+  - method: GET
+    path: /health
+    response:
+      status: 200
+      body:
+        ok: true
+
+  # Path parameters + templated response.
+  - method: GET
+    path: /users/{id}
+    response:
+      status: 200
+      body:
+        id: "{{path.id}}"
+        name: "User {{path.id}}"
+
+  # Conditional response based on a query parameter.
+  - method: GET
+    path: /users
+    when:
+      query:
+        role: admin
+    response:
+      status: 200
+      body:
+        users:
+          - id: 1
+            name: Admin
+      headers:
+        Cache-Control: no-store
+
+  # Fallback for the same path.
+  - method: GET
+    path: /users
+    response:
+      status: 200
+      body:
+        users:
+          - id: 1
+            name: John
+          - id: 2
+            name: Jane
+
+  # Conditional response based on a header.
+  - method: GET
+    path: /tenants/me
+    when:
+      headers:
+        X-Tenant-Id: tenant-a
+    response:
+      status: 200
+      body:
+        tenant: "{{header.X-Tenant-Id}}"
+
+  # Create user: echoes the body username via a template is not supported
+  # (body templating is out of MVP scope), so we just return a fixed payload.
+  - method: POST
+    path: /users
+    response:
+      status: 201
+      body:
+        created: true
+
+  # Body-based matching for login.
+  - method: POST
+    path: /login
+    when:
+      body:
+        username: admin
+    response:
+      status: 200
+      body:
+        token: admin-token
+
+  - method: POST
+    path: /login
+    response:
+      status: 401
+      body:
+        error: invalid credentials
+
+  # Simulate a failure.
+  - method: GET
+    path: /fail
+    response:
+      status: 500
+      body:
+        error: something went wrong
+
+  # Simulate a slow response (useful for timeout testing).
+  - method: GET
+    path: /slow
+    response:
+      status: 200
+      delay: 1s
+      body:
+        ok: true
+
+  # Force the connection to be closed after responding.
+  - method: GET
+    path: /drop
+    response:
+      status: 200
+      close_connection: true
+      body:
+        dropped: true
