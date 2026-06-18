@@ -9,6 +9,8 @@ repository = "https://github.com/denislituev/mockd"
 homepage = "https://github.com/denislituev/mockd"
 authors = ["Mockd contributors"]
 readme = "README.md"
+keywords = ["mock", "http", "api", "testing", "server"]
+categories = ["web-programming::http-server", "development-tools::testing"]
 
 [lib]
 name = "mockd"
