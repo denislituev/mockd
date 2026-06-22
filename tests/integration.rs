@@ -420,8 +420,5 @@ async fn cors_disabled_does_not_add_headers() {
     let base = spawn().await;
     let resp = reqwest::get(format!("{base}/health")).await.unwrap();
     assert_eq!(resp.status(), 200);
-    assert!(resp
-        .headers()
-        .get("access-control-allow-origin")
-        .is_none());
+    assert!(resp.headers().get("access-control-allow-origin").is_none());
 }

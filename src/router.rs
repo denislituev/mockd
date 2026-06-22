@@ -509,12 +509,8 @@ mod tests {
 
     #[test]
     fn sequence_sticks_on_last_response_after_exhausting() {
-        let router = Router::new(vec![sequence_route(
-            Method::Get,
-            "/retry",
-            vec![500, 200],
-        )])
-        .unwrap();
+        let router =
+            Router::new(vec![sequence_route(Method::Get, "/retry", vec![500, 200])]).unwrap();
         let (q, h, b) = empty_inputs();
 
         // Consume the whole sequence.
@@ -538,27 +534,42 @@ mod tests {
     fn sequence_state_is_shared_between_router_clones() {
         // The Router is cloned per Axum worker; all clones must observe the
         // same sequence progression.
-        let router =
-            Router::new(vec![sequence_route(Method::Get, "/x", vec![1, 2, 3])]).unwrap();
+        let router = Router::new(vec![sequence_route(Method::Get, "/x", vec![1, 2, 3])]).unwrap();
         let cloned = router.clone();
         let (q, h, b) = empty_inputs();
 
         // Interleave calls from both clones.
         assert_eq!(
-            router.resolve(Method::Get, "/x", &q, &h, &b).unwrap().response.status,
+            router
+                .resolve(Method::Get, "/x", &q, &h, &b)
+                .unwrap()
+                .response
+                .status,
             1
         );
         assert_eq!(
-            cloned.resolve(Method::Get, "/x", &q, &h, &b).unwrap().response.status,
+            cloned
+                .resolve(Method::Get, "/x", &q, &h, &b)
+                .unwrap()
+                .response
+                .status,
             2
         );
         assert_eq!(
-            router.resolve(Method::Get, "/x", &q, &h, &b).unwrap().response.status,
+            router
+                .resolve(Method::Get, "/x", &q, &h, &b)
+                .unwrap()
+                .response
+                .status,
             3
         );
         // Exhausted -> sticks on 3.
         assert_eq!(
-            cloned.resolve(Method::Get, "/x", &q, &h, &b).unwrap().response.status,
+            cloned
+                .resolve(Method::Get, "/x", &q, &h, &b)
+                .unwrap()
+                .response
+                .status,
             3
         );
     }

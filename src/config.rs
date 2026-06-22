@@ -454,12 +454,10 @@ routes:
                 assert_eq!(sequence[1].status, 200);
                 assert_eq!(
                     sequence[1].body,
-                    Some(Value::Object(
-                        serde_json::Map::from_iter([(
-                            "ok".to_string(),
-                            Value::Bool(true)
-                        )])
-                    ))
+                    Some(Value::Object(serde_json::Map::from_iter([(
+                        "ok".to_string(),
+                        Value::Bool(true)
+                    )])))
                 );
             }
             other => panic!("expected Sequence, got {other:?}"),
@@ -479,10 +477,7 @@ routes:
         ok: true
 "#;
         let cfg = Config::parse(yaml).unwrap();
-        assert!(matches!(
-            cfg.routes[0].response,
-            ResponseSpec::Single(_)
-        ));
+        assert!(matches!(cfg.routes[0].response, ResponseSpec::Single(_)));
     }
 
     #[test]

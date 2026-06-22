@@ -38,9 +38,22 @@ day-to-day work of microservice developers.
 
 ## Installation
 
+From source (any platform with a Rust toolchain):
+
 ```bash
 cargo install --path .
 ```
+
+Once published to crates.io:
+
+```bash
+cargo install mockd
+```
+
+Pre-built binaries for Linux (amd64/arm64), macOS (amd64/arm64) and Windows
+(amd64) are published on the [releases page][releases].
+
+[releases]: https://github.com/denislituev/mockd/releases
 
 ## Quick start
 
@@ -257,10 +270,9 @@ Unit tests live next to the code (`#[cfg(test)]` modules); end-to-end tests are
 in [`tests/integration.rs`](tests/integration.rs) and spin up a real server on
 an ephemeral port.
 
-## Roadmap (post-MVP)
+## Roadmap
 
-The following are still planned, in rough priority order for the test-driven use
- case:
+The following are planned for future releases, in rough priority order:
 
 - Stateful responses (`state:`)
 - OpenAPI import (`mockd import openapi.yaml`)
@@ -268,6 +280,8 @@ The following are still planned, in rough priority order for the test-driven use
 
 The following are explicitly **out of scope** for now: GUI/Web UI, Kubernetes
 operator, gRPC, GraphQL, state machines.
+
+See [CHANGELOG.md](CHANGELOG.md) for what is included in this release.
 
 ## License
 
