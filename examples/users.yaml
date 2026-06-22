@@ -3,11 +3,17 @@
 # Start it with:
 #     mockd serve examples/users.yaml
 #
+# For browser/SPA testing, enable CORS:
+#     mockd serve examples/users.yaml --cors
+#
 # Then try:
 #     curl http://localhost:8080/health
 #     curl http://localhost:8080/users/42
 #     curl "http://localhost:8080/users?role=admin"
 #     curl -H "X-Tenant-Id: tenant-a" http://localhost:8080/users
+#     curl -X POST http://localhost:8080/echo -d '{"id":7,"name":"alice"}' -H 'Content-Type: application/json'
+#     curl http://localhost:8080/fresh   # fresh uuid / timestamp each call
+#     curl http://localhost:8080/flaky   # call 3 times: 500, 500, 200
 
 listen: ":8080"
 
@@ -67,14 +73,41 @@ routes:
       body:
         tenant: "{{header.X-Tenant-Id}}"
 
-  # Create user: echoes the body username via a template is not supported
-  # (body templating is out of MVP scope), so we just return a fixed payload.
+  # Create user: echoes the request body via templates.
   - method: POST
     path: /users
     response:
       status: 201
       body:
         created: true
+        id: "{{body.id}}"
+        name: "{{body.name}}"
+
+  # Helper functions for realistic-looking responses.
+  - method: GET
+    path: /fresh
+    response:
+      status: 200
+      body:
+        id: "{{uuid}}"
+        created_at: "{{now}}"
+        priority: "{{randomInt(1,5)}}"
+
+  # Sequence responses: returns 500 twice, then 200 forever.
+  # Useful for testing client retry logic.
+  - method: GET
+    path: /flaky
+    response:
+      sequence:
+        - status: 500
+          body:
+            error: transient
+        - status: 500
+          body:
+            error: transient
+        - status: 200
+          body:
+            ok: true
 
   # Body-based matching for login.
   - method: POST

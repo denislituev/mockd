@@ -17,6 +17,8 @@
 //!    and a JSON body subset.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 
 use serde_json::Value;
 
@@ -33,7 +35,13 @@ struct CompiledRoute {
     method: Method,
     segments: Vec<Segment>,
     when: Option<RequestMatch>,
-    response: ResponseConfig,
+    /// The list of responses for this route. A single-element vec means a
+    /// plain static route; a longer vec is a sequence whose counter advances
+    /// on each match (last item is sticky).
+    responses: Vec<ResponseConfig>,
+    /// Per-route counter for sequence responses. Shared across `Router`
+    /// clones so that all callers observe the same progression.
+    counter: Arc<AtomicUsize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -54,7 +62,8 @@ pub struct Match {
 impl Router {
     /// Compile a set of routes.
     ///
-    /// Returns an error if any route has an invalid path pattern.
+    /// Returns an error if any route has an invalid path pattern or an empty
+    /// `sequence: []` response spec.
     pub fn new(routes: Vec<Route>) -> Result<Self, RouterError> {
         let mut compiled = Vec::with_capacity(routes.len());
         for (index, route) in routes.into_iter().enumerate() {
@@ -62,11 +71,16 @@ impl Router {
                 route_index: index,
                 source: e,
             })?;
+            let responses = route.response.into_responses();
+            if responses.is_empty() {
+                return Err(RouterError::EmptySequence { route_index: index });
+            }
             compiled.push(CompiledRoute {
                 method: route.method,
                 segments,
                 when: route.when,
-                response: route.response,
+                responses,
+                counter: Arc::new(AtomicUsize::new(0)),
             });
         }
         Ok(Router { routes: compiled })
@@ -87,6 +101,9 @@ impl Router {
     /// All inputs use plain, server-agnostic types. `headers` should use
     /// lower-cased header names; header *matching* against route rules is
     /// performed case-insensitively regardless.
+    ///
+    /// For sequence routes, each successful match advances the internal
+    /// counter; the last response in the sequence is repeated forever.
     pub fn resolve(
         &self,
         method: Method,
@@ -103,15 +120,32 @@ impl Router {
             }
             if let Some(path_params) = match_path(&route.segments, &request_segments) {
                 if match_when(route.when.as_ref(), query, headers, body) {
+                    let response = pick_response(route);
                     return Some(Match {
                         path_params,
-                        response: route.response.clone(),
+                        response,
                     });
                 }
             }
         }
         None
     }
+}
+
+/// Select the response for a matched route.
+///
+/// For a single-response route this is the only item. For a sequence route,
+/// each call returns the next item until the last is reached, after which the
+/// last item is returned on every subsequent call (sticky last).
+fn pick_response(route: &CompiledRoute) -> ResponseConfig {
+    let n = route.responses.len();
+    if n == 1 {
+        return route.responses[0].clone();
+    }
+    let idx = route.counter.fetch_add(1, Ordering::Relaxed);
+    // Once we've passed the end, keep returning the last response.
+    let clamped = idx.min(n - 1);
+    route.responses[clamped].clone()
 }
 
 /// Split a request path into non-empty segments, ignoring the leading slash.
@@ -230,6 +264,10 @@ pub enum RouterError {
         #[source]
         source: PathError,
     },
+
+    /// A `response.sequence` was empty.
+    #[error("empty `sequence` in route {route_index}; expected at least one item")]
+    EmptySequence { route_index: usize },
 }
 
 /// Errors in an individual path pattern.
@@ -249,7 +287,7 @@ pub enum PathError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{Method, RequestMatch, ResponseConfig};
+    use crate::config::{Method, RequestMatch, ResponseConfig, ResponseSpec};
     use serde_json::json;
 
     fn route(method: Method, path: &str) -> Route {
@@ -257,8 +295,17 @@ mod tests {
             method,
             path: path.to_string(),
             when: None,
-            response: ResponseConfig::default(),
+            response: ResponseSpec::Single(ResponseConfig::default()),
         }
+    }
+
+    /// Helper: build a route whose single response has the given status.
+    fn route_with_status(method: Method, path: &str, status: u16) -> Route {
+        let mut r = route(method, path);
+        if let ResponseSpec::Single(resp) = &mut r.response {
+            resp.status = status;
+        }
+        r
     }
 
     fn empty_inputs() -> (HashMap<String, String>, HashMap<String, String>, Value) {
@@ -309,10 +356,8 @@ mod tests {
 
     #[test]
     fn first_match_wins() {
-        let mut r1 = route(Method::Get, "/users/{id}");
-        r1.response.status = 200;
-        let mut r2 = route(Method::Get, "/users/{id}");
-        r2.response.status = 201;
+        let r1 = route_with_status(Method::Get, "/users/{id}", 200);
+        let r2 = route_with_status(Method::Get, "/users/{id}", 201);
         let router = Router::new(vec![r1, r2]).unwrap();
         let (q, h, b) = empty_inputs();
         let m = router.resolve(Method::Get, "/users/1", &q, &h, &b).unwrap();
@@ -370,14 +415,12 @@ mod tests {
         // Two routes with the same path: the one without `when` is a fallback,
         // the one with `when` is more specific. Declaring the specific one
         // first makes it win for matching requests.
-        let mut admin = route(Method::Get, "/users");
+        let mut admin = route_with_status(Method::Get, "/users", 201);
         admin.when = Some(RequestMatch {
             query: [("role".to_string(), "admin".to_string())].into(),
             ..Default::default()
         });
-        admin.response.status = 201;
-        let mut generic = route(Method::Get, "/users");
-        generic.response.status = 200;
+        let generic = route_with_status(Method::Get, "/users", 200);
         let router = Router::new(vec![admin, generic]).unwrap();
 
         let (mut q, h, b) = empty_inputs();
@@ -406,5 +449,129 @@ mod tests {
     fn rejects_empty_pattern() {
         let routes = vec![route(Method::Get, "/")];
         assert!(Router::new(routes).is_err());
+    }
+
+    // -----------------------------------------------------------------
+    // Sequence responses
+    // -----------------------------------------------------------------
+
+    fn sequence_route(method: Method, path: &str, statuses: Vec<u16>) -> Route {
+        let sequence = statuses
+            .into_iter()
+            .map(|status| ResponseConfig {
+                status,
+                ..ResponseConfig::default()
+            })
+            .collect();
+        Route {
+            method,
+            path: path.to_string(),
+            when: None,
+            response: ResponseSpec::Sequence { sequence },
+        }
+    }
+
+    #[test]
+    fn sequence_returns_responses_in_order() {
+        let router = Router::new(vec![sequence_route(
+            Method::Get,
+            "/flaky",
+            vec![500, 500, 200],
+        )])
+        .unwrap();
+        let (q, h, b) = empty_inputs();
+
+        assert_eq!(
+            router
+                .resolve(Method::Get, "/flaky", &q, &h, &b)
+                .unwrap()
+                .response
+                .status,
+            500
+        );
+        assert_eq!(
+            router
+                .resolve(Method::Get, "/flaky", &q, &h, &b)
+                .unwrap()
+                .response
+                .status,
+            500
+        );
+        assert_eq!(
+            router
+                .resolve(Method::Get, "/flaky", &q, &h, &b)
+                .unwrap()
+                .response
+                .status,
+            200
+        );
+    }
+
+    #[test]
+    fn sequence_sticks_on_last_response_after_exhausting() {
+        let router = Router::new(vec![sequence_route(
+            Method::Get,
+            "/retry",
+            vec![500, 200],
+        )])
+        .unwrap();
+        let (q, h, b) = empty_inputs();
+
+        // Consume the whole sequence.
+        router.resolve(Method::Get, "/retry", &q, &h, &b);
+        router.resolve(Method::Get, "/retry", &q, &h, &b);
+
+        // Subsequent calls keep returning the last one.
+        for _ in 0..5 {
+            assert_eq!(
+                router
+                    .resolve(Method::Get, "/retry", &q, &h, &b)
+                    .unwrap()
+                    .response
+                    .status,
+                200
+            );
+        }
+    }
+
+    #[test]
+    fn sequence_state_is_shared_between_router_clones() {
+        // The Router is cloned per Axum worker; all clones must observe the
+        // same sequence progression.
+        let router =
+            Router::new(vec![sequence_route(Method::Get, "/x", vec![1, 2, 3])]).unwrap();
+        let cloned = router.clone();
+        let (q, h, b) = empty_inputs();
+
+        // Interleave calls from both clones.
+        assert_eq!(
+            router.resolve(Method::Get, "/x", &q, &h, &b).unwrap().response.status,
+            1
+        );
+        assert_eq!(
+            cloned.resolve(Method::Get, "/x", &q, &h, &b).unwrap().response.status,
+            2
+        );
+        assert_eq!(
+            router.resolve(Method::Get, "/x", &q, &h, &b).unwrap().response.status,
+            3
+        );
+        // Exhausted -> sticks on 3.
+        assert_eq!(
+            cloned.resolve(Method::Get, "/x", &q, &h, &b).unwrap().response.status,
+            3
+        );
+    }
+
+    #[test]
+    fn empty_sequence_is_rejected_at_compile_time() {
+        let r = Route {
+            method: Method::Get,
+            path: "/x".to_string(),
+            when: None,
+            response: ResponseSpec::Sequence { sequence: vec![] },
+        };
+        let err = Router::new(vec![r]).unwrap_err();
+        assert!(matches!(err, RouterError::EmptySequence { route_index: 0 }));
     }
 }

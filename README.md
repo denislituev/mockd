@@ -16,7 +16,7 @@ day-to-day work of microservice developers.
 
 ---
 
-## Features (MVP)
+## Features
 
 - HTTP methods: `GET`, `POST`, `PUT`, `PATCH`, `DELETE`
 - Path parameters: `/users/{id}`
@@ -26,9 +26,15 @@ day-to-day work of microservice developers.
   - `{{path.id}}`
   - `{{query.role}}`
   - `{{header.X-Tenant-Id}}`
+  - `{{body.user.name}}` (dot navigation through the request body)
+  - helper functions: `{{uuid}}`, `{{now}}`, `{{randomInt(min,max)}}`
 - Custom status codes and headers
 - Artificial delays (`delay: 2s`) for timeout testing
 - `close_connection: true` to drop the connection after responding
+- Sequence responses (`response.sequence:`) for testing retry/polling
+- Permissive CORS via `--cors` (handles `OPTIONS` preflight, adds
+  `Access-Control-Allow-Origin: *`)
+- Request logging via `tracing` (one structured line per request)
 
 ## Installation
 
@@ -70,6 +76,12 @@ Validate a config without serving:
 
 ```bash
 mockd validate mocks.yaml
+```
+
+For browser/SPA testing, enable CORS:
+
+```bash
+mockd serve mocks.yaml --cors
 ```
 
 See [`examples/users.yaml`](examples/users.yaml) for a more complete example
@@ -115,6 +127,9 @@ when:
 
 ### `response`
 
+A route's `response` can be either a single response or a **sequence** of
+responses (see [Sequence responses](#sequence-responses) below).
+
 | field              | type       | default | description                                            |
 | ------------------ | ---------- | ------- | ----------------------------------------------------- |
 | `status`           | u16        | `200`   | HTTP status code                                       |
@@ -122,6 +137,30 @@ when:
 | `body`             | any/json   | —       | JSON body, may contain template expressions            |
 | `delay`            | duration   | —       | e.g. `2s`, `250ms`, `1m 30s`                           |
 | `close_connection` | bool       | `false` | Send `Connection: close` and close after responding    |
+
+### Sequence responses
+
+Wrap multiple responses in `response.sequence:` to make mockd return each one
+in order on successive calls. The last item is **sticky**: it is repeated on
+every call once the previous items have been exhausted.
+
+```yaml
+- method: GET
+  path: /flaky
+  response:
+    sequence:
+      - status: 500
+        body: { error: transient }
+      - status: 500
+        body: { error: transient }
+      - status: 200
+        body: { ok: true }
+```
+
+Useful for testing retry logic, polling, pagination and any client behavior
+that depends on a sequence of states.
+
+A single `response: {...}` is equivalent to a one-element sequence.
 
 ### Templating
 
@@ -133,7 +172,32 @@ body:
   role: "{{query.role}}"
   tenant: "{{header.X-Tenant-Id}}"
   label: "user-{{path.id}}"
+  echoed_name: "{{body.user.name}}"
+  request_id: "{{uuid}}"
+  created_at: "{{now}}"
+  priority: "{{randomInt(1,5)}}"
 ```
+
+Lookups:
+
+| Namespace | Example            | Meaning                                        |
+| --------- | ----------------- | ---------------------------------------------- |
+| `path`    | `{{path.id}}`      | A captured path parameter                      |
+| `query`   | `{{query.role}}`   | A query parameter                              |
+| `header`  | `{{header.X-Foo}}` | A request header (case-insensitive name)       |
+| `body`    | `{{body.user.id}}` | Dot-navigate the parsed JSON request body;     |
+|           |                   | numeric segments index into arrays             |
+
+Helper functions (no namespace):
+
+| Expression              | Returns                                          |
+| ----------------------- | ------------------------------------------------ |
+| `{{uuid}}`              | A fresh UUIDv4 string                            |
+| `{{now}}`               | Current UTC time as ISO 8601 (`...Z`)            |
+| `{{randomInt(min,max)}}`| Random integer in the inclusive `[min, max]` range |
+| `{{random}}`            | A random 64-bit integer (whole range)            |
+
+Coercion rules:
 
 - When the **whole** string value is a single expression, the result is coerced
   to the best-fitting JSON type (`42` → number, `true` → bool, `null` → null,
@@ -141,7 +205,30 @@ body:
   `"42"`.
 - When the expression is part of a larger string, it is interpolated as text.
 - Missing/unknown variables resolve to JSON `null` (whole-string) or an empty
-  string (interpolation).
+  string (interpolation). Helper functions always resolve to a value.
+
+### CORS
+
+Pass `--cors` to enable permissive cross-origin support:
+
+- Every response gets `Access-Control-Allow-Origin: *`.
+- `OPTIONS` preflight requests (i.e. they carry `Access-Control-Request-Method`)
+  are answered with `204 No Content` **without** consulting the routes. The
+  `Access-Control-Allow-Headers` value is echoed from the request.
+
+This is intended for local development where the mock server and the frontend
+run on different origins (e.g. `localhost:8080` mock + `localhost:3000` Vite).
+
+### Logging
+
+mockd logs every request to stderr via `tracing`. The default level is `info`
+(one structured line per request). Tune with the standard `RUST_LOG`
+environment variable:
+
+```bash
+RUST_LOG=mockd=warn mockd serve mocks.yaml     # quieter
+RUST_LOG=mockd=debug mockd serve mocks.yaml    # verbose (includes delays)
+```
 
 ## Architecture
 
@@ -172,9 +259,9 @@ an ephemeral port.
 
 ## Roadmap (post-MVP)
 
-The current architecture is intentionally minimal but extensible. Planned:
+The following are still planned, in rough priority order for the test-driven use
+ case:
 
-- Sequence responses (`response.sequence:`)
 - Stateful responses (`state:`)
 - OpenAPI import (`mockd import openapi.yaml`)
 - Request recording / replay

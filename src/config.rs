@@ -166,6 +166,63 @@ fn default_status() -> u16 {
 }
 
 // ---------------------------------------------------------------------------
+// Response spec: a single response or a sequence of responses
+// ---------------------------------------------------------------------------
+
+/// Either a single response or an ordered sequence of responses.
+///
+/// A route's `response` field accepts either shape via YAML:
+///
+/// ```yaml
+/// # Single response (the existing form).
+/// response:
+///   status: 200
+///   body: { ok: true }
+///
+/// # Sequence: each call advances to the next response.
+/// # After the last one is reached, the last response is repeated forever.
+/// response:
+///   sequence:
+///     - status: 500
+///     - status: 500
+///     - status: 200
+///       body: { ok: true }
+/// ```
+///
+/// Sequence responses are useful for testing retry, polling and pagination
+/// logic in clients.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum ResponseSpec {
+    /// A response sequence. Each match advances to the next item; the last
+    /// item is sticky (repeated on every subsequent call).
+    Sequence {
+        /// The ordered responses.
+        sequence: Vec<ResponseConfig>,
+    },
+    /// A single static response.
+    Single(ResponseConfig),
+}
+
+impl ResponseSpec {
+    /// Flatten this spec into the underlying list of responses.
+    ///
+    /// `Single(r)` becomes `vec![r]`; `Sequence { sequence }` is returned as-is.
+    pub fn into_responses(self) -> Vec<ResponseConfig> {
+        match self {
+            ResponseSpec::Single(r) => vec![r],
+            ResponseSpec::Sequence { sequence } => sequence,
+        }
+    }
+}
+
+impl Default for ResponseSpec {
+    fn default() -> Self {
+        ResponseSpec::Single(ResponseConfig::default())
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Route
 // ---------------------------------------------------------------------------
 
@@ -187,9 +244,9 @@ pub struct Route {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub when: Option<RequestMatch>,
 
-    /// Response produced when the route matches.
+    /// Response (single or sequence) produced when the route matches.
     #[serde(default)]
-    pub response: ResponseConfig,
+    pub response: ResponseSpec,
 }
 
 // ---------------------------------------------------------------------------
@@ -333,8 +390,12 @@ routes:
             route.when.as_ref().unwrap().query.get("role").unwrap(),
             "admin"
         );
-        assert_eq!(route.response.status, 200);
-        assert_eq!(route.response.delay, Some(Duration::from_secs(2)));
+        let resp = match &route.response {
+            ResponseSpec::Single(r) => r,
+            ResponseSpec::Sequence { .. } => panic!("expected Single"),
+        };
+        assert_eq!(resp.status, 200);
+        assert_eq!(resp.delay, Some(Duration::from_secs(2)));
     }
 
     #[test]
@@ -369,5 +430,75 @@ routes:
     fn missing_file_errors() {
         let err = Config::from_file("/nonexistent/path/to/config.yaml").unwrap_err();
         assert!(matches!(err, ConfigError::Read(_)));
+    }
+
+    #[test]
+    fn parses_sequence_response() {
+        let yaml = r#"
+routes:
+  - method: GET
+    path: /flaky
+    response:
+      sequence:
+        - status: 500
+        - status: 200
+          body:
+            ok: true
+"#;
+        let cfg = Config::parse(yaml).unwrap();
+        let route = &cfg.routes[0];
+        match &route.response {
+            ResponseSpec::Sequence { sequence } => {
+                assert_eq!(sequence.len(), 2);
+                assert_eq!(sequence[0].status, 500);
+                assert_eq!(sequence[1].status, 200);
+                assert_eq!(
+                    sequence[1].body,
+                    Some(Value::Object(
+                        serde_json::Map::from_iter([(
+                            "ok".to_string(),
+                            Value::Bool(true)
+                        )])
+                    ))
+                );
+            }
+            other => panic!("expected Sequence, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_single_response_by_default() {
+        // Same shape as before the sequence feature; must still parse as Single.
+        let yaml = r#"
+routes:
+  - method: GET
+    path: /health
+    response:
+      status: 200
+      body:
+        ok: true
+"#;
+        let cfg = Config::parse(yaml).unwrap();
+        assert!(matches!(
+            cfg.routes[0].response,
+            ResponseSpec::Single(_)
+        ));
+    }
+
+    #[test]
+    fn sequence_round_trip() {
+        let yaml = r#"
+routes:
+  - method: GET
+    path: /retry
+    response:
+      sequence:
+        - status: 500
+        - status: 200
+"#;
+        let cfg = Config::parse(yaml).unwrap();
+        let reserialized = serde_yaml::to_string(&cfg).unwrap();
+        let cfg2 = Config::parse(&reserialized).unwrap();
+        assert_eq!(cfg, cfg2);
     }
 }

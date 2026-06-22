@@ -87,12 +87,58 @@ routes:
       delay: 200ms
       body:
         ok: true
+
+  # Sequence: returns 500 twice, then 200 forever. Used to test retry logic.
+  - method: GET
+    path: /flaky
+    response:
+      sequence:
+        - status: 500
+          body:
+            error: transient
+        - status: 500
+          body:
+            error: transient
+        - status: 200
+          body:
+            ok: true
+
+  # Body templating: echo the request body back in the response.
+  - method: POST
+    path: /echo
+    response:
+      status: 201
+      body:
+        id: "{{body.id}}"
+        name: "{{body.name}}"
+        echoed: true
+
+  # Helper functions: fresh values per call.
+  - method: GET
+    path: /fresh
+    response:
+      status: 200
+      body:
+        id: "{{uuid}}"
+        created_at: "{{now}}"
+        priority: "{{randomInt(1,5)}}"
 "#;
 
 /// Bind a mockd server to an ephemeral port, spawn it, and return its base URL.
 async fn spawn() -> String {
+    spawn_with(false).await
+}
+
+/// Like [`spawn`] but with CORS enabled.
+async fn spawn_cors() -> String {
+    spawn_with(true).await
+}
+
+async fn spawn_with(cors: bool) -> String {
     let config = Config::parse(CONFIG).expect("config parses");
-    let server = Server::from_config(config).expect("server builds");
+    let server = Server::from_config(config)
+        .expect("server builds")
+        .with_cors(cors);
     let app = server.app();
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -242,4 +288,140 @@ async fn default_content_type_is_json() {
         resp.headers().get("content-type").unwrap(),
         "application/json"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Sequence responses
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn sequence_returns_responses_in_order() {
+    let base = spawn().await;
+    let client = reqwest::Client::new();
+
+    // First two calls fail.
+    for _ in 0..2 {
+        let resp = client.get(format!("{base}/flaky")).send().await.unwrap();
+        assert_eq!(resp.status(), 500);
+        assert_eq!(body(resp).await, json!({"error": "transient"}));
+    }
+
+    // From the third call onward, the success response sticks.
+    for _ in 0..3 {
+        let resp = client.get(format!("{base}/flaky")).send().await.unwrap();
+        assert_eq!(resp.status(), 200);
+        assert_eq!(body(resp).await, json!({"ok": true}));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Body templating
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn body_template_echoes_request_fields() {
+    let base = spawn().await;
+    let client = reqwest::Client::new();
+
+    let resp = client
+        .post(format!("{base}/echo"))
+        .json(&json!({"id": 99, "name": "alice", "extra": "ignored"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 201);
+    assert_eq!(
+        body(resp).await,
+        json!({"id": 99, "name": "alice", "echoed": true})
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Helper functions
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn helper_functions_produce_realistic_values() {
+    let base = spawn().await;
+    let resp = reqwest::get(format!("{base}/fresh")).await.unwrap();
+    assert_eq!(resp.status(), 200);
+    let v = body(resp).await;
+
+    // `id` is a 36-char UUID string.
+    let id = v["id"].as_str().expect("id is a string");
+    assert_eq!(id.len(), 36);
+    assert_eq!(id.chars().filter(|&c| c == '-').count(), 4);
+
+    // `created_at` matches YYYY-MM-DDTHH:MM:SSZ (20 chars).
+    let ts = v["created_at"].as_str().expect("created_at is a string");
+    assert_eq!(ts.len(), 20);
+    assert!(ts.ends_with('Z'));
+
+    // `priority` is a number in [1, 5].
+    let priority = v["priority"].as_i64().expect("priority is a number");
+    assert!((1..=5).contains(&priority));
+}
+
+#[tokio::test]
+async fn helper_functions_produce_unique_uuids_per_call() {
+    let base = spawn().await;
+    let a = body(reqwest::get(format!("{base}/fresh")).await.unwrap()).await;
+    let b = body(reqwest::get(format!("{base}/fresh")).await.unwrap()).await;
+    assert_ne!(a["id"], b["id"]);
+}
+
+// ---------------------------------------------------------------------------
+// CORS
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn cors_enabled_adds_allow_origin_header() {
+    let base = spawn_cors().await;
+    let resp = reqwest::get(format!("{base}/health")).await.unwrap();
+    assert_eq!(resp.status(), 200);
+    assert_eq!(
+        resp.headers().get("access-control-allow-origin").unwrap(),
+        "*"
+    );
+}
+
+#[tokio::test]
+async fn cors_enabled_handles_preflight() {
+    let base = spawn_cors().await;
+    let client = reqwest::Client::new();
+    let resp = client
+        .request(reqwest::Method::OPTIONS, format!("{base}/users"))
+        .header("Origin", "https://example.com")
+        .header("Access-Control-Request-Method", "POST")
+        .header("Access-Control-Request-Headers", "Content-Type")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 204);
+    assert_eq!(
+        resp.headers().get("access-control-allow-origin").unwrap(),
+        "*"
+    );
+    assert!(resp
+        .headers()
+        .get("access-control-allow-methods")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .contains("POST"));
+    assert_eq!(
+        resp.headers().get("access-control-allow-headers").unwrap(),
+        "Content-Type"
+    );
+}
+
+#[tokio::test]
+async fn cors_disabled_does_not_add_headers() {
+    let base = spawn().await;
+    let resp = reqwest::get(format!("{base}/health")).await.unwrap();
+    assert_eq!(resp.status(), 200);
+    assert!(resp
+        .headers()
+        .get("access-control-allow-origin")
+        .is_none());
 }

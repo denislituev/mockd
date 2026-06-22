@@ -5,6 +5,9 @@
 //! matching to the router, applies any configured delay, renders template
 //! expressions in the response body and produces the HTTP response.
 //!
+//! Optional CORS support adds permissive cross-origin headers and handles
+//! `OPTIONS` preflight requests before route matching.
+//!
 //! For testing, [`build_app`] returns a plain `axum::Router` that can be bound
 //! to any address (including an ephemeral one).
 
@@ -13,7 +16,7 @@ use std::sync::Arc;
 
 use axum::body::{Body, Bytes};
 use axum::extract::State;
-use axum::http::{HeaderMap, Method as AxumMethod, Response, StatusCode, Uri};
+use axum::http::{HeaderMap, HeaderValue, Method as AxumMethod, Response, StatusCode, Uri};
 use axum::response::IntoResponse;
 use axum::routing::any;
 use serde_json::Value;
@@ -27,6 +30,7 @@ use crate::template::{render, TemplateContext};
 pub struct Server {
     router: Router,
     listen: String,
+    cors: bool,
 }
 
 /// Errors that can occur while building or running a [`Server`].
@@ -55,12 +59,21 @@ pub enum ServerError {
 
 impl Server {
     /// Build a server from a parsed [`Config`].
+    ///
+    /// CORS is disabled by default; use [`Server::with_cors`] to enable it.
     pub fn from_config(config: Config) -> Result<Self, ServerError> {
         let router = Router::new(config.routes)?;
         Ok(Server {
             router,
             listen: config.listen,
+            cors: false,
         })
+    }
+
+    /// Enable or disable permissive CORS support.
+    pub fn with_cors(mut self, enabled: bool) -> Self {
+        self.cors = enabled;
+        self
     }
 
     /// Build the Axum application for this server.
@@ -68,7 +81,7 @@ impl Server {
     /// Exposed primarily for integration tests; [`Server::serve`] is the
     /// normal entry point.
     pub fn app(&self) -> axum::Router {
-        build_app(self.router.clone())
+        build_app(self.router.clone(), self.cors)
     }
 
     /// Number of compiled routes.
@@ -86,7 +99,7 @@ impl Server {
                 source,
             })?;
         let addr = listener_local_addr(&listener);
-        eprintln!("[mockd] listening on {addr}");
+        tracing::info!("listening on {addr}");
         let app = self.app();
         axum::serve(listener, app)
             .await
@@ -117,22 +130,48 @@ fn listener_local_addr(listener: &tokio::net::TcpListener) -> String {
 }
 
 /// Build an Axum application backed by the given router.
-pub fn build_app(router: Router) -> axum::Router {
+///
+/// When `cors` is `true`, every response carries permissive CORS headers and
+/// `OPTIONS` preflight requests are answered with `204 No Content` without
+/// being forwarded to the router.
+pub fn build_app(router: Router, cors: bool) -> axum::Router {
+    let state = Arc::new(AppState { router, cors });
     axum::Router::new()
         .fallback(any(handler))
-        .with_state(Arc::new(router))
+        .with_state(state)
+}
+
+/// Shared per-application state passed to the handler.
+#[derive(Clone)]
+struct AppState {
+    router: Router,
+    cors: bool,
 }
 
 /// The single request handler that backs every mockd route.
 async fn handler(
-    State(router): State<Arc<Router>>,
+    State(state): State<Arc<AppState>>,
     method: AxumMethod,
     uri: Uri,
     headers: HeaderMap,
     body: Bytes,
 ) -> Response<Body> {
+    let method_str = method.as_str().to_string();
+    let path = uri.path().to_string();
+
+    // CORS preflight: must be handled before route matching because OPTIONS
+    // is not part of mockd's Method enum.
+    if state.cors
+        && method == AxumMethod::OPTIONS
+        && headers.contains_key("access-control-request-method")
+    {
+        tracing::info!(%method_str, %path, status = 204, "cors preflight");
+        return cors_preflight(&headers);
+    }
+
     let Some(core_method) = Method::from_http_str(method.as_str()) else {
-        return not_found();
+        tracing::info!(%method_str, %path, status = 404, "unsupported method");
+        return not_found(state.cors);
     };
 
     let query = parse_query(uri.query().unwrap_or(""));
@@ -142,13 +181,17 @@ async fn handler(
     let Some(Match {
         path_params,
         response,
-    }) = router.resolve(core_method, uri.path(), &query, &header_map, &request_body)
+    }) = state
+        .router
+        .resolve(core_method, &path, &query, &header_map, &request_body)
     else {
-        return not_found();
+        tracing::info!(%method_str, %path, status = 404, "no matching route");
+        return not_found(state.cors);
     };
 
     // Optional artificial delay (used to test timeouts).
     if let Some(delay) = response.delay {
+        tracing::debug!(?delay, "applying artificial delay");
         tokio::time::sleep(delay).await;
     }
 
@@ -158,17 +201,23 @@ async fn handler(
             path: path_params.clone(),
             query: query.clone(),
             headers: header_map.clone(),
+            body: request_body.clone(),
         };
         render(&b, &ctx)
     });
 
-    build_response(
-        response.status,
-        &response.headers,
-        rendered,
-        response.close_connection,
-    )
-    .unwrap_or_else(|_| internal_error())
+    let status = response.status;
+    let close_connection = response.close_connection;
+
+    let mut resp = build_response(status, &response.headers, rendered, close_connection)
+        .unwrap_or_else(|_| internal_error());
+
+    if state.cors {
+        add_cors_headers(resp.headers_mut());
+    }
+
+    tracing::info!(%method_str, %path, status, "handled");
+    resp
 }
 
 /// Parse a raw query string into a map.
@@ -242,13 +291,49 @@ fn build_response(
     Ok(builder.body(Body::from(bytes)).unwrap())
 }
 
-fn not_found() -> Response<Body> {
-    (
+/// Append the permissive CORS headers used for non-preflight responses.
+fn add_cors_headers(headers: &mut HeaderMap) {
+    headers.insert("access-control-allow-origin", HeaderValue::from_static("*"));
+    // The response varies by Origin, even though we always echo `*`, so that
+    // caches do not return a CORS-configured response to a non-CORS request.
+    headers.insert("vary", HeaderValue::from_static("origin"));
+}
+
+/// Build a `204 No Content` response for a CORS preflight.
+///
+/// The allowed request headers are echoed from `Access-Control-Request-Headers`
+/// if present, otherwise `*` is advertised.
+fn cors_preflight(req_headers: &HeaderMap) -> Response<Body> {
+    let allow_headers = req_headers
+        .get("access-control-request-headers")
+        .cloned()
+        .unwrap_or_else(|| HeaderValue::from_static("*"));
+
+    Response::builder()
+        .status(StatusCode::NO_CONTENT)
+        .header("access-control-allow-origin", "*")
+        .header(
+            "access-control-allow-methods",
+            "GET, POST, PUT, PATCH, DELETE, OPTIONS",
+        )
+        .header("access-control-allow-headers", allow_headers)
+        .header("access-control-max-age", "86400")
+        .header("vary", "origin")
+        .body(Body::empty())
+        .unwrap()
+}
+
+fn not_found(cors: bool) -> Response<Body> {
+    let mut resp = (
         StatusCode::NOT_FOUND,
         [(axum::http::header::CONTENT_TYPE, "application/json")],
         r#"{"error":"no matching route"}"#,
     )
-        .into_response()
+        .into_response();
+    if cors {
+        add_cors_headers(resp.headers_mut());
+    }
+    resp
 }
 
 fn internal_error() -> Response<Body> {
@@ -342,5 +427,55 @@ mod tests {
         assert_eq!(normalize_listen(":8080"), "0.0.0.0:8080");
         assert_eq!(normalize_listen("127.0.0.1:9000"), "127.0.0.1:9000");
         assert_eq!(normalize_listen("[::1]:8080"), "[::1]:8080");
+    }
+
+    #[test]
+    fn cors_preflight_has_cors_headers() {
+        let resp = cors_preflight(&HeaderMap::new());
+        assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+        assert_eq!(
+            resp.headers()
+                .get("access-control-allow-origin")
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            "*"
+        );
+        assert!(resp
+            .headers()
+            .get("access-control-allow-methods")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .contains("GET"));
+        // No Access-Control-Request-Headers -> default to "*".
+        assert_eq!(
+            resp.headers()
+                .get("access-control-allow-headers")
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            "*"
+        );
+    }
+
+    #[test]
+    fn cors_preflight_echoes_requested_headers() {
+        let mut req = HeaderMap::new();
+        req.insert(
+            "access-control-request-headers",
+            "X-Tenant-Id, Authorization"
+                .parse()
+                .unwrap(),
+        );
+        let resp = cors_preflight(&req);
+        assert_eq!(
+            resp.headers()
+                .get("access-control-allow-headers")
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            "X-Tenant-Id, Authorization"
+        );
     }
 }

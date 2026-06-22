@@ -6,6 +6,18 @@
 //! - `path.<name>` — a captured path parameter, e.g. `{{path.id}}`.
 //! - `query.<name>` — a query parameter, e.g. `{{query.role}}`.
 //! - `header.<name>` — a request header, e.g. `{{header.x-tenant-id}}`.
+//! - `body.<json.path>` — a value extracted from the JSON request body using
+//!   dot navigation through objects and array indices, e.g.
+//!   `{{body.user.name}}` or `{{body.items.0.id}}`.
+//!
+//! In addition, the following helper functions are available (called without
+//! a namespace):
+//!
+//! - `{{uuid}}` — a fresh UUIDv4 string, e.g. `550e8400-e29b-41d4-a716-446655440000`.
+//! - `{{now}}` — the current UTC time as an ISO 8601 string, e.g.
+//!   `2024-01-15T12:34:56Z`.
+//! - `{{randomInt(min,max)}}` — a random integer in the inclusive range
+//!   `[min, max]`, e.g. `{{randomInt(1,100)}}`. Useful for generating IDs.
 //!
 //! ## Interpolation vs. coercion
 //!
@@ -23,10 +35,17 @@
 //!
 //! Unknown or missing variables resolve to an empty string during
 //! interpolation, and to JSON null when used as a whole-value coercion.
+//!
+//! Note: helper functions such as `{{uuid}}` produce a fresh value on every
+//! render and therefore never coerce to `null`.
 
 use std::collections::HashMap;
 
+use rand::Rng;
 use serde_json::Value;
+use time::macros::format_description;
+use time::OffsetDateTime;
+use uuid::Uuid;
 
 /// Lookup tables used while rendering templates.
 #[derive(Debug, Clone, Default)]
@@ -37,6 +56,8 @@ pub struct TemplateContext {
     pub query: HashMap<String, String>,
     /// Request headers. Keys are expected to be lower-cased.
     pub headers: HashMap<String, String>,
+    /// Parsed JSON request body (`Value::Null` when the body was not JSON).
+    pub body: Value,
 }
 
 impl TemplateContext {
@@ -45,31 +66,120 @@ impl TemplateContext {
         Self::default()
     }
 
-    /// Resolve `path.<key>`, `query.<key>` or `header.<key>` to a string value.
+    /// Resolve an expression to a string value.
     ///
-    /// Returns `None` when the namespace is unknown or the variable is absent.
-    pub fn lookup(&self, expression: &str) -> Option<&str> {
-        let (namespace, rest) = expression.split_once('.')?;
-        let map = match namespace {
-            "path" => &self.path,
-            "query" => &self.query,
-            "header" => &self.headers,
-            _ => return None,
-        };
-        // Headers are matched case-insensitively. For path/query we use exact
-        // keys, but a case-insensitive fallback keeps header lookups ergonomic
-        // regardless of how the caller cased the key.
-        if let Some(v) = map.get(rest) {
-            return Some(v.as_str());
+    /// The expression may be:
+    /// - a helper function name (with or without arguments),
+    /// - `path.<key>`, `query.<key>`, `header.<key>`, or
+    /// - `body.<json.path>` (dot navigation through objects/arrays).
+    ///
+    /// Returns `None` when the expression is unknown or the value is absent.
+    /// Helper functions never return `None`.
+    pub fn lookup(&self, expression: &str) -> Option<String> {
+        // Helper functions take priority; they have no namespace prefix
+        // (or include parentheses for arguments).
+        if let Some(value) = lookup_function(expression) {
+            return Some(value);
         }
-        if namespace == "header" {
-            let lower = rest.to_ascii_lowercase();
-            map.get(&lower).map(String::as_str)
-        } else {
-            None
+
+        let (namespace, rest) = expression.split_once('.')?;
+        match namespace {
+            "path" => self.path.get(rest).cloned(),
+            "query" => self.query.get(rest).cloned(),
+            "header" => self.header_lookup(rest),
+            "body" => lookup_body(&self.body, rest),
+            _ => None,
         }
     }
+
+    /// Case-insensitive header lookup. Path/query use exact keys.
+    fn header_lookup(&self, key: &str) -> Option<String> {
+        if let Some(v) = self.headers.get(key) {
+            return Some(v.clone());
+        }
+        let lower = key.to_ascii_lowercase();
+        self.headers.get(&lower).cloned()
+    }
 }
+
+// ---------------------------------------------------------------------------
+// Helper functions
+// ---------------------------------------------------------------------------
+
+/// Resolve one of the built-in helper functions, or return `None` if `expr`
+/// does not name a function.
+fn lookup_function(expr: &str) -> Option<String> {
+    // Argument-taking form: `randomInt(min,max)`.
+    if let Some(args) = expr
+        .strip_prefix("randomInt(")
+        .and_then(|s| s.strip_suffix(')'))
+    {
+        let (lo, hi) = args.split_once(',')?;
+        let lo: i64 = lo.trim().parse().ok()?;
+        let hi: i64 = hi.trim().parse().ok()?;
+        if lo > hi {
+            return None;
+        }
+        let n = rand::thread_rng().gen_range(lo..=hi);
+        return Some(n.to_string());
+    }
+
+    // No-argument helpers.
+    match expr {
+        "uuid" => Some(Uuid::new_v4().to_string()),
+        "now" => Some(format_now_iso8601()),
+        "random" => {
+            let n: i64 = rand::thread_rng().gen();
+            Some(n.to_string())
+        }
+        _ => None,
+    }
+}
+
+/// Format the current UTC time as an ISO 8601 string (`YYYY-MM-DDTHH:MM:SSZ`).
+fn format_now_iso8601() -> String {
+    // The macro produces a `&'static [BorrowedFormatItem]` at compile time,
+    // so there is no per-call allocation and nothing to cache.
+    let format = format_description!("[year]-[month]-[day]T[hour]:[minute]:[second]Z");
+    OffsetDateTime::now_utc()
+        .format(format)
+        .unwrap_or_default()
+}
+
+/// Navigate `body` using dot-separated keys (object fields or array indices).
+fn lookup_body(body: &Value, path: &str) -> Option<String> {
+    let mut current = body;
+    for key in path.split('.') {
+        if key.is_empty() {
+            return None;
+        }
+        current = match current {
+            Value::Object(map) => map.get(key)?,
+            Value::Array(arr) => {
+                let idx: usize = key.parse().ok()?;
+                arr.get(idx)?
+            }
+            _ => return None,
+        };
+    }
+    Some(value_to_string(current))
+}
+
+/// Render a JSON value as a string suitable for template interpolation.
+fn value_to_string(v: &Value) -> String {
+    match v {
+        Value::String(s) => s.clone(),
+        Value::Number(n) => n.to_string(),
+        Value::Bool(b) => b.to_string(),
+        Value::Null => "null".to_string(),
+        // Objects and arrays are emitted as compact JSON.
+        other => other.to_string(),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Rendering
+// ---------------------------------------------------------------------------
 
 /// Render every string value inside `value`, returning a new [`Value`].
 ///
@@ -107,7 +217,7 @@ fn render_string(s: &str, ctx: &TemplateContext) -> Value {
     // Whole-string expression: attempt type coercion.
     if let Some(expr) = extract_single_expression(s) {
         return match ctx.lookup(&expr) {
-            Some(raw) => coerce(raw),
+            Some(raw) => coerce(&raw),
             None => Value::Null,
         };
     }
@@ -122,7 +232,7 @@ fn render_string(s: &str, ctx: &TemplateContext) -> Value {
             Some(end) => {
                 let expr = after_open[..end].trim();
                 if let Some(val) = ctx.lookup(expr) {
-                    out.push_str(val);
+                    out.push_str(&val);
                 }
                 rest = &after_open[end + 2..];
             }
@@ -171,6 +281,23 @@ mod tests {
         c.path.insert("id".into(), "42".into());
         c.query.insert("role".into(), "admin".into());
         c.headers.insert("x-tenant-id".into(), "tenant-a".into());
+        c
+    }
+
+    fn ctx_with_body() -> TemplateContext {
+        let mut c = ctx();
+        c.body = json!({
+            "user": {
+                "name": "alice",
+                "age": 30,
+                "roles": ["admin", "editor"],
+                "active": true,
+            },
+            "items": [
+                { "id": 1, "label": "first" },
+                { "id": 2, "label": "second" }
+            ]
+        });
         c
     }
 
@@ -270,5 +397,105 @@ mod tests {
         // `{{}}` -> expr is empty -> lookup None -> interpolated as empty.
         let v = render(&json!("a{{}}b"), &ctx());
         assert_eq!(v, json!("ab"));
+    }
+
+    // -----------------------------------------------------------------
+    // body.* navigation
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn body_lookup_object_field() {
+        let v = render(&json!("{{body.user.name}}"), &ctx_with_body());
+        assert_eq!(v, json!("alice"));
+    }
+
+    #[test]
+    fn body_lookup_number_is_coerced() {
+        let v = render(&json!("{{body.user.age}}"), &ctx_with_body());
+        assert_eq!(v, json!(30));
+    }
+
+    #[test]
+    fn body_lookup_array_index_then_field() {
+        let v = render(&json!("{{body.items.1.label}}"), &ctx_with_body());
+        assert_eq!(v, json!("second"));
+    }
+
+    #[test]
+    fn body_lookup_missing_path_is_null() {
+        let v = render(&json!("{{body.user.nope}}"), &ctx_with_body());
+        assert_eq!(v, Value::Null);
+    }
+
+    #[test]
+    fn body_lookup_interpolated_in_larger_string() {
+        let v = render(&json!("hello {{body.user.name}}!"), &ctx_with_body());
+        assert_eq!(v, json!("hello alice!"));
+    }
+
+    #[test]
+    fn body_lookup_when_body_is_null() {
+        // No JSON body -> Value::Null -> any body.* resolves to null.
+        let v = render(&json!("{{body.user.name}}"), &TemplateContext::new());
+        assert_eq!(v, Value::Null);
+    }
+
+    // -----------------------------------------------------------------
+    // helper functions
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn uuid_renders_as_string() {
+        let v = render(&json!("{{uuid}}"), &TemplateContext::new());
+        let s = v.as_str().expect("uuid is a string");
+        // Sanity check: 36 chars with hyphens in the right positions.
+        assert_eq!(s.len(), 36);
+        assert_eq!(s.chars().filter(|&c| c == '-').count(), 4);
+    }
+
+    #[test]
+    fn uuid_is_unique_per_render() {
+        let a = render(&json!("{{uuid}}"), &TemplateContext::new());
+        let b = render(&json!("{{uuid}}"), &TemplateContext::new());
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn uuid_within_larger_string() {
+        let v = render(&json!("id-{{uuid}}"), &TemplateContext::new());
+        let s = v.as_str().unwrap();
+        assert!(s.starts_with("id-"));
+        assert!(s.len() > 3);
+    }
+
+    #[test]
+    fn now_renders_as_iso8601_string() {
+        let v = render(&json!("{{now}}"), &TemplateContext::new());
+        let s = v.as_str().expect("now is a string");
+        // YYYY-MM-DDTHH:MM:SSZ -> 20 chars.
+        assert_eq!(s.len(), 20);
+        assert!(s.ends_with('Z'));
+    }
+
+    #[test]
+    fn random_int_within_bounds() {
+        for _ in 0..1000 {
+            let v = render(&json!("{{randomInt(1,10)}}"), &TemplateContext::new());
+            let n = v.as_i64().expect("randomInt yields a number");
+            assert!((1..=10).contains(&n));
+        }
+    }
+
+    #[test]
+    fn random_int_single_value() {
+        let v = render(&json!("{{randomInt(5,5)}}"), &TemplateContext::new());
+        assert_eq!(v, json!(5));
+    }
+
+    #[test]
+    fn random_int_inverted_range_resolves_to_null() {
+        // lo > hi -> lookup_function returns None -> coercion to null.
+        let v = render(&json!("{{randomInt(10,1)}}"), &TemplateContext::new());
+        assert_eq!(v, Value::Null);
     }
 }
