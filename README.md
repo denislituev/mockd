@@ -44,10 +44,11 @@ From source (any platform with a Rust toolchain):
 cargo install --path .
 ```
 
-Once published to crates.io:
+Once published to crates.io (the package name is `mockd-http`; the binary
+is still installed as `mockd`):
 
 ```bash
-cargo install mockd
+cargo install mockd-http
 ```
 
 Pre-built binaries for Linux (amd64/arm64), macOS (amd64/arm64) and Windows

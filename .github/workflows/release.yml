@@ -165,7 +165,7 @@ jobs:
 
           ### Cargo
           \`\`\`bash
-          cargo install mockd
+          cargo install mockd-http
           \`\`\`
           EOF
 
