@@ -141,9 +141,7 @@ fn format_now_iso8601() -> String {
     // The macro produces a `&'static [BorrowedFormatItem]` at compile time,
     // so there is no per-call allocation and nothing to cache.
     let format = format_description!("[year]-[month]-[day]T[hour]:[minute]:[second]Z");
-    OffsetDateTime::now_utc()
-        .format(format)
-        .unwrap_or_default()
+    OffsetDateTime::now_utc().format(format).unwrap_or_default()
 }
 
 /// Navigate `body` using dot-separated keys (object fields or array indices).

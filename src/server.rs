@@ -136,9 +136,7 @@ fn listener_local_addr(listener: &tokio::net::TcpListener) -> String {
 /// being forwarded to the router.
 pub fn build_app(router: Router, cors: bool) -> axum::Router {
     let state = Arc::new(AppState { router, cors });
-    axum::Router::new()
-        .fallback(any(handler))
-        .with_state(state)
+    axum::Router::new().fallback(any(handler)).with_state(state)
 }
 
 /// Shared per-application state passed to the handler.
@@ -464,9 +462,7 @@ mod tests {
         let mut req = HeaderMap::new();
         req.insert(
             "access-control-request-headers",
-            "X-Tenant-Id, Authorization"
-                .parse()
-                .unwrap(),
+            "X-Tenant-Id, Authorization".parse().unwrap(),
         );
         let resp = cors_preflight(&req);
         assert_eq!(
