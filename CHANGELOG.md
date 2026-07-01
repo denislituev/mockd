@@ -61,6 +61,14 @@ tests and CI/CD.
   - Tunable via the standard `RUST_LOG` environment variable (defaults to
     `mockd=info`)
 
+- **Editor support**
+  - A [JSON Schema](https://denislituev.github.io/mockd/schema.json) for the
+    YAML configuration, generated from the Rust types via `schemars`. Add a
+    `# yaml-language-server: $schema=...` hint to your `mocks.yaml` to get
+    autocompletion, hover-docs and inline validation in VS Code, Zed,
+    IntelliJ and other editors. A unit test guards against drift between
+    the schema and the code.
+
 - **Project infrastructure**
   - Dual-licensed under MIT OR Apache-2.0
   - CI workflows for lint (rustfmt + clippy), tests, release builds, and

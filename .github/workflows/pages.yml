@@ -1,0 +1,69 @@
+name: Publish JSON Schema
+
+# Publish `docs/schema.json` to GitHub Pages so that editors can fetch it
+# via the stable URL advertised in the README:
+#
+#     https://denislituev.github.io/mockd/schema.json
+#
+# Users add this to the top of their `mocks.yaml`:
+#
+#     # yaml-language-server: $schema=https://denislituev.github.io/mockd/schema.json
+#
+# The schema is generated from the Rust types in `src/config.rs` via `schemars`,
+# so it never drifts from the code.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "src/config.rs"
+      - "Cargo.toml"
+      - "docs/schema.json"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Allow only one concurrent Pages deployment.
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build Pages artifact
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo and build
+        uses: Swatinem/rust-cache@v2
+
+      - name: Verify the committed schema matches the types
+        run: cargo test --lib schema_does_not_drift
+
+      - name: Upload any drift as a Pages artifact
+        uses: actions/configure-pages@v5
+
+      - name: Build artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs/
+
+  deploy:
+    name: Deploy to GitHub Pages
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

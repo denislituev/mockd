@@ -1,0 +1,170 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Config",
+  "description": "Top-level configuration file.",
+  "type": "object",
+  "properties": {
+    "listen": {
+      "description": "Socket address to listen on, e.g. `\":8080\"` or `\"127.0.0.1:9000\"`.",
+      "default": ":8080",
+      "type": "string"
+    },
+    "routes": {
+      "description": "Mock routes, evaluated in declaration order (first match wins).",
+      "default": [],
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/Route"
+      }
+    }
+  },
+  "definitions": {
+    "Method": {
+      "description": "Supported HTTP methods.\n\nSerialized in upper-case form (`GET`, `POST`, ...) to match the way methods are written in HTTP and in the configuration file.",
+      "type": "string",
+      "enum": [
+        "GET",
+        "POST",
+        "PUT",
+        "PATCH",
+        "DELETE"
+      ]
+    },
+    "RequestMatch": {
+      "description": "Rules used to decide whether a [`Route`] matches an incoming request.\n\nAll fields are optional; an empty [`RequestMatch`] matches every request. Header matching is performed case-insensitively by the router.",
+      "type": "object",
+      "properties": {
+        "body": {
+          "description": "A JSON value that must be a subset of the request body.\n\nSubset matching means: every field of a JSON object in `body` must be present (and equal) in the request body. Arrays must match element by element and have the same length. Scalar values use equality."
+        },
+        "headers": {
+          "description": "Request headers that must be present with the given value.\n\nMatched case-insensitively.",
+          "default": {},
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "query": {
+          "description": "Query parameters that must be present with the given value.",
+          "default": {},
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "ResponseConfig": {
+      "description": "How a matched request should be answered.",
+      "type": "object",
+      "properties": {
+        "body": {
+          "description": "Response body. Rendered as JSON.\n\nMay contain template expressions such as `{{path.id}}` (see the [`template`](crate::template) module)."
+        },
+        "close_connection": {
+          "description": "When `true`, the server signals that the connection should be closed after the response (by sending the `Connection: close` header).",
+          "default": false,
+          "type": "boolean"
+        },
+        "delay": {
+          "description": "Optional artificial delay before the response is sent.\n\nParsed from human-friendly durations, e.g. `2s`, `250ms`, `1m 30s`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "headers": {
+          "description": "Response headers.",
+          "default": {},
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "status": {
+          "description": "HTTP status code. Defaults to `200`.",
+          "default": 200,
+          "type": "integer",
+          "format": "uint16",
+          "minimum": 0.0
+        }
+      }
+    },
+    "ResponseSpec": {
+      "description": "Either a single response or an ordered sequence of responses.\n\nA route's `response` field accepts either shape via YAML:\n\n```yaml # Single response (the existing form). response: status: 200 body: { ok: true }\n\n# Sequence: each call advances to the next response. # After the last one is reached, the last response is repeated forever. response: sequence: - status: 500 - status: 500 - status: 200 body: { ok: true } ```\n\nSequence responses are useful for testing retry, polling and pagination logic in clients.",
+      "anyOf": [
+        {
+          "description": "A response sequence. Each match advances to the next item; the last item is sticky (repeated on every subsequent call).",
+          "type": "object",
+          "required": [
+            "sequence"
+          ],
+          "properties": {
+            "sequence": {
+              "description": "The ordered responses.",
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/ResponseConfig"
+              }
+            }
+          }
+        },
+        {
+          "description": "A single static response.",
+          "allOf": [
+            {
+              "$ref": "#/definitions/ResponseConfig"
+            }
+          ]
+        }
+      ]
+    },
+    "Route": {
+      "description": "A single mock route.\n\nA route is selected when its HTTP `method` and `path` match the request, and (optionally) the [`RequestMatch`] rules in `when` are satisfied.",
+      "type": "object",
+      "required": [
+        "method",
+        "path"
+      ],
+      "properties": {
+        "method": {
+          "description": "HTTP method for this route.",
+          "allOf": [
+            {
+              "$ref": "#/definitions/Method"
+            }
+          ]
+        },
+        "path": {
+          "description": "Path pattern, e.g. `/users/{id}`.\n\nSegments wrapped in curly braces are captured as path parameters.",
+          "type": "string"
+        },
+        "response": {
+          "description": "Response (single or sequence) produced when the route matches.",
+          "default": {
+            "close_connection": false,
+            "headers": {},
+            "status": 200
+          },
+          "allOf": [
+            {
+              "$ref": "#/definitions/ResponseSpec"
+            }
+          ]
+        },
+        "when": {
+          "description": "Optional additional request matching rules.",
+          "anyOf": [
+            {
+              "$ref": "#/definitions/RequestMatch"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    }
+  }
+}

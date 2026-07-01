@@ -37,12 +37,12 @@ enum Command {
         cors: bool,
     },
     /// Parse and compile the configuration file without starting a server.
-    ///
-    /// Exits with a non-zero status if the configuration is invalid.
     Validate {
         /// Path to the YAML configuration file.
         config: PathBuf,
     },
+    /// Generate current JSON schema for the config
+    Generate { path: Option<PathBuf> },
 }
 
 fn main() -> ExitCode {
@@ -70,7 +70,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             let runtime = tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
                 .build()?;
-            runtime.block_on(server.serve())?;
+            runtime.block_on(server.serve(shutdown_signal()))?;
         }
         Command::Validate { config } => {
             let cfg = Config::from_file(&config)?;
@@ -81,6 +81,37 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 server.route_count()
             );
         }
+        Command::Generate { path } => {
+            let path_dir = path.unwrap_or_else(|| PathBuf::from("./docs/"));
+
+            Config::write_config_schema(&path_dir)?;
+        }
     }
     Ok(())
+}
+
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        tokio::signal::ctrl_c()
+            .await
+            .expect("failed to install Ctrl+C handler");
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("failed to install signal handler")
+            .recv()
+            .await;
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => {},
+        _ = terminate => {},
+    }
+
+    tracing::info!("shutdown signal received");
 }

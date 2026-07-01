@@ -1,5 +1,7 @@
 # Example mockd configuration.
 #
+# yaml-language-server: $schema=https://denislituev.github.io/mockd/schema.json
+#
 # Start it with:
 #     mockd serve examples/users.yaml
 #
