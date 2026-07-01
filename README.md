@@ -1,5 +1,13 @@
 # Mockd
 
+[![CI](https://img.shields.io/github/actions/workflow/status/denislituev/mockd/ci.yml?branch=main&label=CI&logo=github)](https://github.com/denislituev/mockd/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/actions/workflow/status/denislituev/mockd/release.yml?label=Release&logo=github)](https://github.com/denislituev/mockd/actions/workflows/release.yml)
+[![crates.io](https://img.shields.io/crates/v/mockd-http?logo=rust&label=crates.io)](https://crates.io/crates/mockd-http)
+[![downloads](https://img.shields.io/crates/d/mockd-http?logo=rust)](https://crates.io/crates/mockd-http)
+[![docs.rs](https://img.shields.io/docsrs/mockd-http?logo=docs.rs)](https://docs.rs/mockd-http)
+[![license](https://img.shields.io/crates/l/mockd-http)](#license)
+[![rust](https://img.shields.io/badge/rust-1.75%2B-orange?logo=rust)](https://www.rust-lang.org/)
+
 **Mockd** is a lightweight standalone mock HTTP server for local development,
 integration tests and CI/CD. You describe your API with a declarative YAML
 config — no code required — and mockd serves it.
