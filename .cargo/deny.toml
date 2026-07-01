@@ -13,11 +13,6 @@ allow = [
     "Apache-2.0 WITH LLVM-exception",
     "BSD-2-Clause",
     "BSD-3-Clause",
-    "ISC",
-    "Zlib",
-    "0BSD",
-    "CC0-1.0",
-    "Unicode-DFS-2016",
     "Unicode-3.0",
 ]
 

@@ -244,6 +244,32 @@ RUST_LOG=mockd=warn mockd serve mocks.yaml     # quieter
 RUST_LOG=mockd=debug mockd serve mocks.yaml    # verbose (includes delays)
 ```
 
+### Editor support (JSON Schema)
+
+A [JSON Schema](https://json-schema.org/) for the configuration file is
+published at:
+
+```
+https://denislituev.github.io/mockd/schema.json
+```
+
+Add this comment to the top of your `mocks.yaml` to get autocompletion,
+hover-documentation and inline validation in editors that support the
+`yaml-language-server` convention (VS Code with the Red Hat YAML extension,
+Zed, IntelliJ, Neovim):
+
+```yaml
+# yaml-language-server: $schema=https://denislituev.github.io/mockd/schema.json
+listen: ":8080"
+routes:
+  # ...
+```
+
+The schema is generated from the Rust types in [`src/config.rs`](src/config.rs)
+via [`schemars`](https://crates.io/crates/schemars). Regenerate it with
+`mockd generate`; a unit test guards against drift between the committed
+schema and the code.
+
 ## Architecture
 
 Mockd is a single crate split into focused modules:

@@ -12,6 +12,7 @@
 //! to any address (including an ephemeral one).
 
 use std::collections::HashMap;
+use std::future::Future;
 use std::sync::Arc;
 
 use axum::body::{Body, Bytes};
@@ -90,7 +91,10 @@ impl Server {
     }
 
     /// Bind the configured address and serve until interrupted.
-    pub async fn serve(&self) -> Result<(), ServerError> {
+    pub async fn serve<F>(&self, shutdown: F) -> Result<(), ServerError>
+    where
+        F: Future<Output = ()> + Send + 'static,
+    {
         let listen = normalize_listen(&self.listen);
         let listener = tokio::net::TcpListener::bind(&listen)
             .await
@@ -102,6 +106,7 @@ impl Server {
         tracing::info!("listening on {addr}");
         let app = self.app();
         axum::serve(listener, app)
+            .with_graceful_shutdown(shutdown)
             .await
             .map_err(ServerError::Serve)?;
         Ok(())

@@ -11,28 +11,6 @@
 //! - [`template`] — `{{path.id}}` / `{{query.x}}` / `{{header.y}}` rendering.
 //! - [`server`] — the Axum HTTP layer.
 //!
-//! # Quick start
-//!
-//! ```no_run
-//! use mockd::{config::Config, server::Server};
-//!
-//! # async fn run() -> anyhow::Result<()> {
-//! let yaml = r#"
-//! listen: ":8080"
-//! routes:
-//!   - method: GET
-//!     path: /health
-//!     response:
-//!       status: 200
-//!       body:
-//!         ok: true
-//! "#;
-//! let config = Config::parse(yaml)?;
-//! let server = Server::from_config(config)?;
-//! server.serve().await?;
-//! # Ok(())
-//! # }
-//! ```
 
 #![forbid(unsafe_code)]
 

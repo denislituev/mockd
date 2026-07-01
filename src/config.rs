@@ -21,6 +21,7 @@ use std::path::Path;
 use std::str::FromStr;
 use std::time::Duration;
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -32,7 +33,7 @@ use serde_json::Value;
 ///
 /// Serialized in upper-case form (`GET`, `POST`, ...) to match the way methods
 /// are written in HTTP and in the configuration file.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "UPPERCASE")]
 pub enum Method {
     Get,
@@ -90,7 +91,7 @@ pub struct UnknownMethodError(pub String);
 ///
 /// All fields are optional; an empty [`RequestMatch`] matches every request.
 /// Header matching is performed case-insensitively by the router.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct RequestMatch {
     /// Query parameters that must be present with the given value.
     #[serde(default)]
@@ -116,7 +117,7 @@ pub struct RequestMatch {
 // ---------------------------------------------------------------------------
 
 /// How a matched request should be answered.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct ResponseConfig {
     /// HTTP status code. Defaults to `200`.
     #[serde(default = "default_status")]
@@ -141,6 +142,7 @@ pub struct ResponseConfig {
         with = "duration_option",
         skip_serializing_if = "Option::is_none"
     )]
+    #[schemars(with = "Option<String>")]
     pub delay: Option<Duration>,
 
     /// When `true`, the server signals that the connection should be closed
@@ -191,7 +193,7 @@ fn default_status() -> u16 {
 ///
 /// Sequence responses are useful for testing retry, polling and pagination
 /// logic in clients.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(untagged)]
 pub enum ResponseSpec {
     /// A response sequence. Each match advances to the next item; the last
@@ -230,7 +232,7 @@ impl Default for ResponseSpec {
 ///
 /// A route is selected when its HTTP `method` and `path` match the request,
 /// and (optionally) the [`RequestMatch`] rules in `when` are satisfied.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct Route {
     /// HTTP method for this route.
     pub method: Method,
@@ -254,7 +256,7 @@ pub struct Route {
 // ---------------------------------------------------------------------------
 
 /// Top-level configuration file.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct Config {
     /// Socket address to listen on, e.g. `":8080"` or `"127.0.0.1:9000"`.
     #[serde(default = "default_listen")]
@@ -288,6 +290,18 @@ impl Config {
     pub fn from_file<P: AsRef<Path>>(path: P) -> Result<Self, ConfigError> {
         let contents = std::fs::read_to_string(path.as_ref()).map_err(ConfigError::Read)?;
         Self::parse(&contents)
+    }
+    /// Save JSON schema
+    pub fn write_config_schema(path: &Path) -> anyhow::Result<()> {
+        let schema = schemars::schema_for!(Config);
+        let mut json = serde_json::to_string_pretty(&schema)?;
+        json.push('\n');
+
+        std::fs::create_dir_all(path)?;
+        let schema_path = path.join("schema.json");
+        std::fs::write(schema_path, json)?;
+
+        Ok(())
     }
 }
 
@@ -495,5 +509,16 @@ routes:
         let reserialized = serde_yaml::to_string(&cfg).unwrap();
         let cfg2 = Config::parse(&reserialized).unwrap();
         assert_eq!(cfg, cfg2);
+    }
+
+    /// Guard against the committed schema drifting from the Rust types.
+    #[test]
+    fn schema_does_not_drift() {
+        let schema = schemars::schema_for!(Config);
+        let mut actual = serde_json::to_string_pretty(&schema).unwrap();
+        actual.push('\n');
+        let expected = std::fs::read_to_string("docs/schema.json")
+            .expect("docs/schema.json is missing; run `cargo run -- generate`");
+        assert_eq!(actual, expected);
     }
 }
