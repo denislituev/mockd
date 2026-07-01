@@ -7,7 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.1.0] - 2026-06-22
+## [0.2.0] - 2026-07-01
+
+### Added
+
+- **`mockd generate` CLI command** — generates a JSON Schema for the
+  configuration file from the Rust types via `schemars`. The schema is
+  published to GitHub Pages at
+  `https://denislituev.github.io/mockd/schema.json` and can be referenced
+  from `mocks.yaml` via a `# yaml-language-server: $schema=...` hint for
+  editor autocompletion, hover-docs and inline validation.
+- **Graceful shutdown** — `mockd serve` now handles `SIGINT` (Ctrl+C) and
+  `SIGTERM` by stopping the server cleanly instead of dropping active
+  connections. Important for CI runners that send `SIGTERM` on timeout.
+
+### Changed
+
+- The package name on crates.io is now `mockd-http` (the `mockd` name was
+  already taken). The binary is still installed as `mockd`.
+
+[Unreleased]: https://github.com/denislituev/mockd/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/denislituev/mockd/releases/tag/v0.2.0
+[0.1.0]: https://github.com/denislituev/mockd/releases/tag/v0.1.0
 
 First public release. A lightweight standalone mock HTTP server driven by a
 declarative YAML configuration, designed for local development, integration
@@ -85,6 +106,3 @@ tests and CI/CD.
 - Response headers do not support multiple values for the same name
   (e.g. multiple `Set-Cookie` headers).
 - HTTPS is not supported; terminate TLS at a reverse proxy if needed.
-
-[Unreleased]: https://github.com/denislituev/mockd/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/denislituev/mockd/releases/tag/v0.1.0
