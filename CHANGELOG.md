@@ -7,6 +7,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-08
+
+### Added
+
+- **Matcher operators in `when:`** — query and header values now support three
+  forms: a plain string (exact match), `matches:` (regular expression) and
+  `contains:` (substring):
+
+  ```yaml
+  when:
+    query:
+      email:
+        matches: "^[^@]+@example\\.com$"
+    headers:
+      X-Environment:
+        contains: staging
+  ```
+
+  Regexes are compiled once when the configuration is loaded; an invalid
+  regex is reported with the exact config path
+  (`invalid regex in route 0 at when.query.email`). `matches` is a search,
+  not a full match — use `^...$` anchors to match the whole value. Header
+  names and exact header values remain case-insensitive; `matches` and
+  `contains` are case-sensitive (`(?i)` for case-insensitive regexes).
+  A matcher object must have exactly one key: combining `matches` with
+  `contains`, or adding unknown keys, is a config error.
+
+- **Matcher operators inside JSON body patterns** — an object with exactly
+  one key `matches`/`contains` and a string value is an operator applied to
+  the corresponding string value of the request body; objects with more
+  keys (or non-string values) keep the literal subset semantics:
+
+  ```yaml
+  when:
+    body:
+      role: admin
+      email:
+        matches: ".*@example\\.com$"
+  ```
+
+  Operators only apply to string values in the request body; a non-string
+  value never matches an operator.
+
+- **Route matching diagnostics** — with `RUST_LOG=mockd=debug` mockd logs
+  why each candidate route was skipped (`method mismatch`, `path mismatch`,
+  or the exact `when` condition that failed, e.g.
+  `query "role": expected "admin"`). The default `info` output stays one
+  line per request. Diagnostics never include actual request values for
+  query parameters and body fields (type mismatches report the JSON type);
+  sensitive headers (`Authorization`, `Proxy-Authorization`, `Cookie`,
+  `Set-Cookie`) are reported without their values.
+
 ## [0.2.0] - 2026-07-01
 
 ### Added
@@ -26,9 +78,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The package name on crates.io is now `mockd-http` (the `mockd` name was
   already taken). The binary is still installed as `mockd`.
 
-[Unreleased]: https://github.com/denislituev/mockd/compare/v0.2.0...HEAD
-[0.2.0]: https://github.com/denislituev/mockd/releases/tag/v0.2.0
-[0.1.0]: https://github.com/denislituev/mockd/releases/tag/v0.1.0
+## [0.1.0] - 2026-06-22
 
 First public release. A lightweight standalone mock HTTP server driven by a
 declarative YAML configuration, designed for local development, integration
@@ -106,3 +156,10 @@ tests and CI/CD.
 - Response headers do not support multiple values for the same name
   (e.g. multiple `Set-Cookie` headers).
 - HTTPS is not supported; terminate TLS at a reverse proxy if needed.
+
+<!-- links -->
+
+[Unreleased]: https://github.com/denislituev/mockd/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/denislituev/mockd/releases/tag/v0.3.0
+[0.2.0]: https://github.com/denislituev/mockd/releases/tag/v0.2.0
+[0.1.0]: https://github.com/denislituev/mockd/releases/tag/v0.1.0

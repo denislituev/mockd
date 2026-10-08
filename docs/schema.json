@@ -19,6 +19,59 @@
     }
   },
   "definitions": {
+    "ContainsMatcher": {
+      "description": "`contains:` — substring matcher.",
+      "type": "object",
+      "required": [
+        "contains"
+      ],
+      "properties": {
+        "contains": {
+          "description": "Substring to look for.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "FieldMatcher": {
+      "description": "How a query or header value in a `when` block is compared to the request.\n\nA plain YAML string is an exact match. The object form selects a matcher:\n\n```yaml when: query: role: admin                        # exact match email: matches: \"^[^@]+@example\\\\.com$\" # regular expression name: contains: alice                  # substring ```\n\nA matcher object must have exactly one key; extra or unknown keys are a config error.",
+      "anyOf": [
+        {
+          "description": "The value must equal this string.",
+          "type": "string"
+        },
+        {
+          "description": "The value must match a regular expression (not anchored; use `^...$` to match the whole value).",
+          "allOf": [
+            {
+              "$ref": "#/definitions/MatchesMatcher"
+            }
+          ]
+        },
+        {
+          "description": "The value must contain a substring.",
+          "allOf": [
+            {
+              "$ref": "#/definitions/ContainsMatcher"
+            }
+          ]
+        }
+      ]
+    },
+    "MatchesMatcher": {
+      "description": "`matches:` — regular-expression matcher.",
+      "type": "object",
+      "required": [
+        "matches"
+      ],
+      "properties": {
+        "matches": {
+          "description": "Regular expression, compiled once at startup.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
     "Method": {
       "description": "Supported HTTP methods.\n\nSerialized in upper-case form (`GET`, `POST`, ...) to match the way methods are written in HTTP and in the configuration file.",
       "type": "string",
@@ -31,26 +84,26 @@
       ]
     },
     "RequestMatch": {
-      "description": "Rules used to decide whether a [`Route`] matches an incoming request.\n\nAll fields are optional; an empty [`RequestMatch`] matches every request. Header matching is performed case-insensitively by the router.",
+      "description": "Rules used to decide whether a [`Route`] matches an incoming request.\n\nAll fields are optional; an empty [`RequestMatch`] matches every request. Header names and exact header values are matched case-insensitively; `matches` and `contains` are case-sensitive.",
       "type": "object",
       "properties": {
         "body": {
           "description": "A JSON value that must be a subset of the request body.\n\nSubset matching means: every field of a JSON object in `body` must be present (and equal) in the request body. Arrays must match element by element and have the same length. Scalar values use equality."
         },
         "headers": {
-          "description": "Request headers that must be present with the given value.\n\nMatched case-insensitively.",
+          "description": "Request headers that must be present with a matching value.",
           "default": {},
           "type": "object",
           "additionalProperties": {
-            "type": "string"
+            "$ref": "#/definitions/FieldMatcher"
           }
         },
         "query": {
-          "description": "Query parameters that must be present with the given value.",
+          "description": "Query parameters that must be present with a matching value.",
           "default": {},
           "type": "object",
           "additionalProperties": {
-            "type": "string"
+            "$ref": "#/definitions/FieldMatcher"
           }
         }
       }

@@ -87,21 +87,64 @@ pub struct UnknownMethodError(pub String);
 // Request matching
 // ---------------------------------------------------------------------------
 
+/// How a query or header value in a `when` block is compared to the request.
+///
+/// A plain YAML string is an exact match. The object form selects a matcher:
+///
+/// ```yaml
+/// when:
+///   query:
+///     role: admin                        # exact match
+///     email:
+///       matches: "^[^@]+@example\\.com$" # regular expression
+///     name:
+///       contains: alice                  # substring
+/// ```
+///
+/// A matcher object must have exactly one key; extra or unknown keys are a
+/// config error.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(untagged)]
+pub enum FieldMatcher {
+    /// The value must equal this string.
+    Exact(String),
+    /// The value must match a regular expression (not anchored; use
+    /// `^...$` to match the whole value).
+    Matches(MatchesMatcher),
+    /// The value must contain a substring.
+    Contains(ContainsMatcher),
+}
+
+/// `matches:` — regular-expression matcher.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct MatchesMatcher {
+    /// Regular expression, compiled once at startup.
+    pub matches: String,
+}
+
+/// `contains:` — substring matcher.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ContainsMatcher {
+    /// Substring to look for.
+    pub contains: String,
+}
+
 /// Rules used to decide whether a [`Route`] matches an incoming request.
 ///
 /// All fields are optional; an empty [`RequestMatch`] matches every request.
-/// Header matching is performed case-insensitively by the router.
+/// Header names and exact header values are matched case-insensitively;
+/// `matches` and `contains` are case-sensitive.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct RequestMatch {
-    /// Query parameters that must be present with the given value.
+    /// Query parameters that must be present with a matching value.
     #[serde(default)]
-    pub query: HashMap<String, String>,
+    pub query: HashMap<String, FieldMatcher>,
 
-    /// Request headers that must be present with the given value.
-    ///
-    /// Matched case-insensitively.
+    /// Request headers that must be present with a matching value.
     #[serde(default)]
-    pub headers: HashMap<String, String>,
+    pub headers: HashMap<String, FieldMatcher>,
 
     /// A JSON value that must be a subset of the request body.
     ///
@@ -402,7 +445,7 @@ routes:
         assert_eq!(route.path, "/users/{id}");
         assert_eq!(
             route.when.as_ref().unwrap().query.get("role").unwrap(),
-            "admin"
+            &FieldMatcher::Exact("admin".to_string())
         );
         let resp = match &route.response {
             ResponseSpec::Single(r) => r,
@@ -433,6 +476,115 @@ routes:
     path: /items
     response:
       status: 201
+"#;
+        let cfg = Config::parse(yaml).unwrap();
+        let reserialized = serde_yaml::to_string(&cfg).unwrap();
+        let cfg2 = Config::parse(&reserialized).unwrap();
+        assert_eq!(cfg, cfg2);
+    }
+
+    #[test]
+    fn parses_matcher_forms() {
+        let yaml = r#"
+routes:
+  - method: GET
+    path: /x
+    when:
+      query:
+        role: admin
+        email:
+          matches: "^[^@]+@example\\.com$"
+        name:
+          contains: ali
+      headers:
+        Authorization:
+          matches: "^Bearer .+$"
+    response:
+      status: 200
+"#;
+        let cfg = Config::parse(yaml).unwrap();
+        let when = cfg.routes[0].when.as_ref().unwrap();
+        assert_eq!(
+            when.query.get("role").unwrap(),
+            &FieldMatcher::Exact("admin".to_string())
+        );
+        assert_eq!(
+            when.query.get("email").unwrap(),
+            &FieldMatcher::Matches(MatchesMatcher {
+                matches: "^[^@]+@example\\.com$".to_string()
+            })
+        );
+        assert_eq!(
+            when.query.get("name").unwrap(),
+            &FieldMatcher::Contains(ContainsMatcher {
+                contains: "ali".to_string()
+            })
+        );
+        assert!(matches!(
+            when.headers.get("Authorization").unwrap(),
+            FieldMatcher::Matches(_)
+        ));
+    }
+
+    #[test]
+    fn unknown_matcher_key_is_rejected() {
+        let yaml = r#"
+routes:
+  - method: GET
+    path: /x
+    when:
+      query:
+        email:
+          regex: "nope"
+"#;
+        assert!(Config::parse(yaml).is_err());
+    }
+
+    #[test]
+    fn matcher_with_both_keys_is_rejected() {
+        let yaml = r#"
+routes:
+  - method: GET
+    path: /x
+    when:
+      query:
+        email:
+          matches: "foo"
+          contains: "bar"
+"#;
+        assert!(Config::parse(yaml).is_err());
+    }
+
+    #[test]
+    fn matcher_with_extra_key_is_rejected() {
+        let yaml = r#"
+routes:
+  - method: GET
+    path: /x
+    when:
+      query:
+        email:
+          matches: "foo"
+          unexpected: value
+"#;
+        assert!(Config::parse(yaml).is_err());
+    }
+
+    #[test]
+    fn matcher_round_trip() {
+        let yaml = r#"
+routes:
+  - method: GET
+    path: /x
+    when:
+      query:
+        email:
+          matches: "@example\\.com$"
+      headers:
+        X-Environment:
+          contains: staging
+    response:
+      status: 200
 "#;
         let cfg = Config::parse(yaml).unwrap();
         let reserialized = serde_yaml::to_string(&cfg).unwrap();

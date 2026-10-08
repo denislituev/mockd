@@ -122,6 +122,63 @@ routes:
         id: "{{uuid}}"
         created_at: "{{now}}"
         priority: "{{randomInt(1,5)}}"
+
+  # Regex matcher on a query parameter.
+  - method: GET
+    path: /search
+    when:
+      query:
+        q:
+          matches: "^user-[0-9]+$"
+    response:
+      status: 200
+      body:
+        result: regex-hit
+
+  - method: GET
+    path: /search
+    response:
+      status: 200
+      body:
+        result: fallback
+
+  # contains matcher on a header.
+  - method: GET
+    path: /env
+    when:
+      headers:
+        X-Environment:
+          contains: staging
+    response:
+      status: 200
+      body:
+        env: staged
+
+  - method: GET
+    path: /env
+    response:
+      status: 200
+      body:
+        env: default
+
+  # matches operator inside a JSON body pattern.
+  - method: POST
+    path: /subscribe
+    when:
+      body:
+        email:
+          matches: ".*@example\\.com$"
+    response:
+      status: 202
+      body:
+        subscribed: true
+
+  - method: POST
+    path: /subscribe
+    response:
+      status: 422
+      body:
+        error: invalid email
 "#;
 
 /// Bind a mockd server to an ephemeral port, spawn it, and return its base URL.
@@ -368,6 +425,73 @@ async fn helper_functions_produce_unique_uuids_per_call() {
     let a = body(reqwest::get(format!("{base}/fresh")).await.unwrap()).await;
     let b = body(reqwest::get(format!("{base}/fresh")).await.unwrap()).await;
     assert_ne!(a["id"], b["id"]);
+}
+
+// ---------------------------------------------------------------------------
+// Matcher operators (matches / contains)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn regex_query_matcher_selects_route() {
+    let base = spawn().await;
+
+    let hit = reqwest::get(format!("{base}/search?q=user-42"))
+        .await
+        .unwrap();
+    assert_eq!(hit.status(), 200);
+    assert_eq!(body(hit).await, json!({"result": "regex-hit"}));
+
+    let miss = reqwest::get(format!("{base}/search?q=admin-42"))
+        .await
+        .unwrap();
+    assert_eq!(miss.status(), 200);
+    assert_eq!(body(miss).await, json!({"result": "fallback"}));
+}
+
+#[tokio::test]
+async fn contains_header_matcher_selects_route() {
+    let base = spawn().await;
+    let client = reqwest::Client::new();
+
+    let hit = client
+        .get(format!("{base}/env"))
+        .header("X-Environment", "staging-eu-1")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(hit.status(), 200);
+    assert_eq!(body(hit).await, json!({"env": "staged"}));
+
+    let miss = client
+        .get(format!("{base}/env"))
+        .header("X-Environment", "production")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(body(miss).await, json!({"env": "default"}));
+}
+
+#[tokio::test]
+async fn body_regex_operator_selects_route() {
+    let base = spawn().await;
+    let client = reqwest::Client::new();
+
+    let hit = client
+        .post(format!("{base}/subscribe"))
+        .json(&json!({"email": "alice@example.com"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(hit.status(), 202);
+    assert_eq!(body(hit).await, json!({"subscribed": true}));
+
+    let miss = client
+        .post(format!("{base}/subscribe"))
+        .json(&json!({"email": "alice@evil.com"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(miss.status(), 422);
 }
 
 // ---------------------------------------------------------------------------

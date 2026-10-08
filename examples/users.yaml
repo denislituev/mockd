@@ -16,6 +16,7 @@
 #     curl -X POST http://localhost:8080/echo -d '{"id":7,"name":"alice"}' -H 'Content-Type: application/json'
 #     curl http://localhost:8080/fresh   # fresh uuid / timestamp each call
 #     curl http://localhost:8080/flaky   # call 3 times: 500, 500, 200
+#     curl "http://localhost:8080/reports?format=csv"   # regex matcher
 
 listen: ":8080"
 
@@ -145,6 +146,25 @@ routes:
       delay: 1s
       body:
         ok: true
+
+  # Regex matcher on a query parameter.
+  - method: GET
+    path: /reports
+    when:
+      query:
+        format:
+          matches: "^(json|csv)$"
+    response:
+      status: 200
+      body:
+        format: "{{query.format}}"
+
+  - method: GET
+    path: /reports
+    response:
+      status: 400
+      body:
+        error: unsupported format
 
   # Force the connection to be closed after responding.
   - method: GET

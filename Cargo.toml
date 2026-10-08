@@ -1,6 +1,6 @@
 [package]
 name = "mockd-http"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 rust-version = "1.75"
 license = "MIT OR Apache-2.0"
@@ -34,6 +34,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1", features = ["v4"] }
 rand = "0.8"
+regex = "1"
 time = { version = "0.3", features = ["formatting", "macros"] }
 schemars = "0.8"
 

@@ -13,8 +13,9 @@
 //! 2. the path pattern matches the request path segment by segment
 //!    (capturing `{param}` segments), and
 //! 3. every rule in the optional `when` block ([`RequestMatch`]) is
-//!    satisfied: required query parameters, headers (case-insensitively)
-//!    and a JSON body subset.
+//!    satisfied: required query parameters, headers and a JSON body subset.
+//!    Values support exact, `matches` (regex) and `contains` (substring)
+//!    matchers; regexes are compiled once in [`Router::new`].
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -22,7 +23,7 @@ use std::sync::Arc;
 
 use serde_json::Value;
 
-use crate::config::{Method, RequestMatch, ResponseConfig, Route};
+use crate::config::{FieldMatcher, Method, RequestMatch, ResponseConfig, Route};
 
 /// A compiled set of routes ready to answer requests.
 #[derive(Debug, Clone)]
@@ -34,7 +35,7 @@ pub struct Router {
 struct CompiledRoute {
     method: Method,
     segments: Vec<Segment>,
-    when: Option<RequestMatch>,
+    when: Option<CompiledWhen>,
     /// The list of responses for this route. A single-element vec means a
     /// plain static route; a longer vec is a sequence whose counter advances
     /// on each match (last item is sticky).
@@ -42,6 +43,32 @@ struct CompiledRoute {
     /// Per-route counter for sequence responses. Shared across `Router`
     /// clones so that all callers observe the same progression.
     counter: Arc<AtomicUsize>,
+}
+
+/// A `when` block with regexes precompiled and header keys lowercased.
+#[derive(Debug, Clone)]
+struct CompiledWhen {
+    query: Vec<(String, CompiledMatcher)>,
+    headers: Vec<(String, CompiledMatcher)>,
+    body: Option<CompiledBody>,
+}
+
+/// A single query/header value matcher with its regex precompiled.
+#[derive(Debug, Clone)]
+enum CompiledMatcher {
+    Exact(String),
+    Matches(regex::Regex),
+    Contains(String),
+}
+
+/// A body pattern node: literal JSON or an embedded matcher operator.
+#[derive(Debug, Clone)]
+enum CompiledBody {
+    Matches(regex::Regex),
+    Contains(String),
+    Value(Value),
+    Object(Vec<(String, CompiledBody)>),
+    Array(Vec<CompiledBody>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -62,8 +89,9 @@ pub struct Match {
 impl Router {
     /// Compile a set of routes.
     ///
-    /// Returns an error if any route has an invalid path pattern or an empty
-    /// `sequence: []` response spec.
+    /// Returns an error if any route has an invalid path pattern, an empty
+    /// `sequence: []` response spec, or an invalid regex in a `when`
+    /// matcher (regexes are compiled once here, not per request).
     pub fn new(routes: Vec<Route>) -> Result<Self, RouterError> {
         let mut compiled = Vec::with_capacity(routes.len());
         for (index, route) in routes.into_iter().enumerate() {
@@ -71,6 +99,17 @@ impl Router {
                 route_index: index,
                 source: e,
             })?;
+            let when =
+                route
+                    .when
+                    .as_ref()
+                    .map(compile_when)
+                    .transpose()
+                    .map_err(|(field, source)| RouterError::InvalidRegex {
+                        route_index: index,
+                        field,
+                        source,
+                    })?;
             let responses = route.response.into_responses();
             if responses.is_empty() {
                 return Err(RouterError::EmptySequence { route_index: index });
@@ -78,7 +117,7 @@ impl Router {
             compiled.push(CompiledRoute {
                 method: route.method,
                 segments,
-                when: route.when,
+                when,
                 responses,
                 counter: Arc::new(AtomicUsize::new(0)),
             });
@@ -100,10 +139,13 @@ impl Router {
     ///
     /// All inputs use plain, server-agnostic types. `headers` should use
     /// lower-cased header names; header *matching* against route rules is
-    /// performed case-insensitively regardless.
+    /// performed case-insensitively for exact values regardless.
     ///
     /// For sequence routes, each successful match advances the internal
     /// counter; the last response in the sequence is repeated forever.
+    ///
+    /// When no route matches, `RUST_LOG=mockd=debug` explains why each
+    /// candidate route was skipped.
     pub fn resolve(
         &self,
         method: Method,
@@ -114,19 +156,24 @@ impl Router {
     ) -> Option<Match> {
         let request_segments: Vec<&str> = path_segments(path).collect();
 
-        for route in &self.routes {
+        for (index, route) in self.routes.iter().enumerate() {
             if route.method != method {
+                tracing::debug!(route = index, reason = "method mismatch", "route skipped");
                 continue;
             }
-            if let Some(path_params) = match_path(&route.segments, &request_segments) {
-                if match_when(route.when.as_ref(), query, headers, body) {
-                    let response = pick_response(route);
-                    return Some(Match {
-                        path_params,
-                        response,
-                    });
-                }
+            let Some(path_params) = match_path(&route.segments, &request_segments) else {
+                tracing::debug!(route = index, reason = "path mismatch", "route skipped");
+                continue;
+            };
+            if let Err(reason) = match_when(route.when.as_ref(), query, headers, body) {
+                tracing::debug!(route = index, reason = %reason, "route skipped");
+                continue;
             }
+            let response = pick_response(route);
+            return Some(Match {
+                path_params,
+                response,
+            });
         }
         None
     }
@@ -206,51 +253,268 @@ fn match_path(segments: &[Segment], request: &[&str]) -> Option<HashMap<String, 
     Some(params)
 }
 
+/// Compile a `when` block: precompile regexes and lowercase header keys.
+///
+/// The error carries the config path of the offending field (e.g.
+/// `when.query.email`) for reporting.
+fn compile_when(when: &RequestMatch) -> Result<CompiledWhen, (String, regex::Error)> {
+    let mut query = Vec::with_capacity(when.query.len());
+    for (key, matcher) in &when.query {
+        let compiled = compile_matcher(matcher).map_err(|e| (format!("when.query.{key}"), e))?;
+        query.push((key.clone(), compiled));
+    }
+
+    let mut headers = Vec::with_capacity(when.headers.len());
+    for (key, matcher) in &when.headers {
+        let compiled = compile_matcher(matcher).map_err(|e| (format!("when.headers.{key}"), e))?;
+        headers.push((key.to_ascii_lowercase(), compiled));
+    }
+
+    let body = when
+        .body
+        .as_ref()
+        .map(|pattern| compile_body(pattern, "when.body"))
+        .transpose()?;
+
+    Ok(CompiledWhen {
+        query,
+        headers,
+        body,
+    })
+}
+
+fn compile_matcher(matcher: &FieldMatcher) -> Result<CompiledMatcher, regex::Error> {
+    match matcher {
+        FieldMatcher::Exact(value) => Ok(CompiledMatcher::Exact(value.clone())),
+        FieldMatcher::Matches(m) => Ok(CompiledMatcher::Matches(regex::Regex::new(&m.matches)?)),
+        FieldMatcher::Contains(c) => Ok(CompiledMatcher::Contains(c.contains.clone())),
+    }
+}
+
+/// Compile a body pattern.
+///
+/// A JSON object with exactly one key `matches`/`contains` and a string
+/// value is an operator; any other object (or array) is a literal subset
+/// pattern compiled recursively.
+fn compile_body(pattern: &Value, path: &str) -> Result<CompiledBody, (String, regex::Error)> {
+    match pattern {
+        Value::Object(map) => {
+            if map.len() == 1 {
+                if let Some(pattern) = map.get("matches").and_then(Value::as_str) {
+                    return regex::Regex::new(pattern)
+                        .map(CompiledBody::Matches)
+                        .map_err(|e| (format!("{path}.matches"), e));
+                }
+                if let Some(needle) = map.get("contains").and_then(Value::as_str) {
+                    return Ok(CompiledBody::Contains(needle.to_string()));
+                }
+            }
+            let entries = map
+                .iter()
+                .map(|(key, value)| {
+                    compile_body(value, &format!("{path}.{key}"))
+                        .map(|compiled| (key.clone(), compiled))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(CompiledBody::Object(entries))
+        }
+        Value::Array(items) => {
+            let compiled = items
+                .iter()
+                .enumerate()
+                .map(|(i, item)| compile_body(item, &format!("{path}[{i}]")))
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(CompiledBody::Array(compiled))
+        }
+        literal => Ok(CompiledBody::Value(literal.clone())),
+    }
+}
+
 /// Evaluate the optional `when` block.
+///
+/// Returns `Ok(())` when every condition holds, or `Err(reason)` with a
+/// human-readable explanation of the first failing condition (surfaced in
+/// debug logging when a route is skipped).
 fn match_when(
-    when: Option<&RequestMatch>,
+    when: Option<&CompiledWhen>,
     query: &HashMap<String, String>,
     headers: &HashMap<String, String>,
     body: &Value,
-) -> bool {
+) -> Result<(), String> {
     let Some(when) = when else {
-        return true;
+        return Ok(());
     };
-    when.query
-        .iter()
-        .all(|(k, v)| query.get(k).map(|actual| actual == v).unwrap_or(false))
-        && when.headers.iter().all(|(k, v)| {
-            let lower = k.to_ascii_lowercase();
-            headers
-                .get(&lower)
-                .map(|actual| actual.eq_ignore_ascii_case(v))
-                .unwrap_or(false)
-        })
-        && when
-            .body
-            .as_ref()
-            .map(|pattern| body_matches(pattern, body))
-            .unwrap_or(true)
+
+    for (key, matcher) in &when.query {
+        match query.get(key) {
+            Some(actual) => {
+                if !matcher_matches(matcher, actual, false) {
+                    return Err(format!("query \"{key}\": {}", expectation_desc(matcher)));
+                }
+            }
+            None => return Err(format!("query \"{key}\" is missing")),
+        }
+    }
+
+    for (key, matcher) in &when.headers {
+        match headers.get(key) {
+            Some(actual) => {
+                if !matcher_matches(matcher, actual, true) {
+                    return Err(if is_sensitive_header(key) {
+                        format!("header \"{key}\": value did not match the expected matcher")
+                    } else {
+                        header_mismatch_desc(key, matcher, actual)
+                    });
+                }
+            }
+            None => return Err(format!("header \"{key}\" is missing")),
+        }
+    }
+
+    if let Some(pattern) = &when.body {
+        body_matches(pattern, body, "body")?;
+    }
+
+    Ok(())
 }
 
-/// Subset match between a JSON pattern and the actual request body.
+/// Apply a compiled matcher to an actual value.
+///
+/// Exact header values are compared case-insensitively (historical
+/// behavior); `matches` and `contains` are case-sensitive everywhere.
+fn matcher_matches(matcher: &CompiledMatcher, actual: &str, ignore_case: bool) -> bool {
+    match matcher {
+        CompiledMatcher::Exact(expected) => {
+            if ignore_case {
+                actual.eq_ignore_ascii_case(expected)
+            } else {
+                actual == expected
+            }
+        }
+        CompiledMatcher::Matches(re) => re.is_match(actual),
+        CompiledMatcher::Contains(needle) => actual.contains(needle.as_str()),
+    }
+}
+
+/// Headers whose values must never appear in logs.
+const SENSITIVE_HEADERS: [&str; 4] = [
+    "authorization",
+    "proxy-authorization",
+    "cookie",
+    "set-cookie",
+];
+
+fn is_sensitive_header(name: &str) -> bool {
+    SENSITIVE_HEADERS.contains(&name.to_ascii_lowercase().as_str())
+}
+
+/// Describe what a matcher expects (never includes request values).
+fn expectation_desc(matcher: &CompiledMatcher) -> String {
+    match matcher {
+        CompiledMatcher::Exact(expected) => format!("expected \"{expected}\""),
+        CompiledMatcher::Matches(re) => format!("value does not match /{}/", re.as_str()),
+        CompiledMatcher::Contains(needle) => format!("value does not contain \"{needle}\""),
+    }
+}
+
+/// Describe why a header matcher did not accept the actual value. Regular
+/// headers log both sides; sensitive headers are masked by the caller.
+fn header_mismatch_desc(key: &str, matcher: &CompiledMatcher, actual: &str) -> String {
+    match matcher {
+        CompiledMatcher::Exact(expected) => {
+            format!("header \"{key}\": expected \"{expected}\", got \"{actual}\"")
+        }
+        CompiledMatcher::Matches(re) => format!(
+            "header \"{key}\": \"{actual}\" does not match /{}/",
+            re.as_str()
+        ),
+        CompiledMatcher::Contains(needle) => {
+            format!("header \"{key}\": \"{actual}\" does not contain \"{needle}\"")
+        }
+    }
+}
+
+/// Subset match between a compiled body pattern and the actual request body.
 ///
 /// - Objects: every key in the pattern must be present and recursively match.
 /// - Arrays: must have the same length and match element by element.
 /// - Scalars: equality.
-fn body_matches(pattern: &Value, actual: &Value) -> bool {
-    match (pattern, actual) {
-        (Value::Object(pattern), Value::Object(actual)) => pattern.iter().all(|(key, value)| {
-            actual
-                .get(key)
-                .map(|a| body_matches(value, a))
-                .unwrap_or(false)
-        }),
-        (Value::Array(pattern), Value::Array(actual)) => {
-            pattern.len() == actual.len()
-                && pattern.iter().zip(actual).all(|(p, a)| body_matches(p, a))
+/// - `matches`/`contains` operators only apply to string values; a
+///   non-string value never matches an operator.
+///
+/// On failure, `Err` carries the failing path (e.g. `body.user.email`);
+/// actual request values are never included, type mismatches report the
+/// JSON type instead.
+fn body_matches(pattern: &CompiledBody, actual: &Value, path: &str) -> Result<(), String> {
+    match pattern {
+        CompiledBody::Matches(re) => match actual.as_str() {
+            Some(value) if re.is_match(value) => Ok(()),
+            Some(_) => Err(format!("{path}: value does not match /{}/", re.as_str())),
+            None => Err(format!(
+                "{path}: expected a string matching /{}/",
+                re.as_str()
+            )),
+        },
+        CompiledBody::Contains(needle) => match actual.as_str() {
+            Some(value) if value.contains(needle.as_str()) => Ok(()),
+            Some(_) => Err(format!("{path}: value does not contain \"{needle}\"")),
+            None => Err(format!("{path}: expected a string containing \"{needle}\"")),
+        },
+        CompiledBody::Value(expected) => {
+            if expected == actual {
+                Ok(())
+            } else {
+                Err(format!(
+                    "{path}: expected {expected}, got {}",
+                    json_type_name(actual)
+                ))
+            }
         }
-        _ => pattern == actual,
+        CompiledBody::Object(entries) => {
+            let Value::Object(map) = actual else {
+                return Err(format!(
+                    "{path}: expected an object, got {}",
+                    json_type_name(actual)
+                ));
+            };
+            for (key, sub) in entries {
+                match map.get(key) {
+                    Some(value) => body_matches(sub, value, &format!("{path}.{key}"))?,
+                    None => return Err(format!("{path}: missing field \"{key}\"")),
+                }
+            }
+            Ok(())
+        }
+        CompiledBody::Array(items) => {
+            let Value::Array(values) = actual else {
+                return Err(format!(
+                    "{path}: expected an array, got {}",
+                    json_type_name(actual)
+                ));
+            };
+            if items.len() != values.len() {
+                return Err(format!(
+                    "{path}: expected {} item(s), got {}",
+                    items.len(),
+                    values.len()
+                ));
+            }
+            for (i, (sub, value)) in items.iter().zip(values).enumerate() {
+                body_matches(sub, value, &format!("{path}[{i}]"))?;
+            }
+            Ok(())
+        }
+    }
+}
+
+fn json_type_name(value: &Value) -> &'static str {
+    match value {
+        Value::Null => "null",
+        Value::Bool(_) => "a boolean",
+        Value::Number(_) => "a number",
+        Value::String(_) => "a string",
+        Value::Array(_) => "an array",
+        Value::Object(_) => "an object",
     }
 }
 
@@ -263,6 +527,15 @@ pub enum RouterError {
         route_index: usize,
         #[source]
         source: PathError,
+    },
+
+    /// A `matches` regex in a `when` block could not be compiled.
+    #[error("invalid regex in route {route_index} at {field}: {source}")]
+    InvalidRegex {
+        route_index: usize,
+        field: String,
+        #[source]
+        source: regex::Error,
     },
 
     /// A `response.sequence` was empty.
@@ -287,7 +560,10 @@ pub enum PathError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{Method, RequestMatch, ResponseConfig, ResponseSpec};
+    use crate::config::{
+        ContainsMatcher, FieldMatcher, MatchesMatcher, Method, RequestMatch, ResponseConfig,
+        ResponseSpec,
+    };
     use serde_json::json;
 
     fn route(method: Method, path: &str) -> Route {
@@ -368,7 +644,7 @@ mod tests {
     fn matches_query_param() {
         let mut r = route(Method::Get, "/users");
         r.when = Some(RequestMatch {
-            query: [("role".to_string(), "admin".to_string())].into(),
+            query: [("role".to_string(), FieldMatcher::Exact("admin".to_string()))].into(),
             ..Default::default()
         });
         let router = Router::new(vec![r]).unwrap();
@@ -382,7 +658,11 @@ mod tests {
     fn matches_header_case_insensitively() {
         let mut r = route(Method::Get, "/users");
         r.when = Some(RequestMatch {
-            headers: [("X-Tenant-Id".to_string(), "tenant-a".to_string())].into(),
+            headers: [(
+                "X-Tenant-Id".to_string(),
+                FieldMatcher::Exact("tenant-a".to_string()),
+            )]
+            .into(),
             ..Default::default()
         });
         let router = Router::new(vec![r]).unwrap();
@@ -417,7 +697,7 @@ mod tests {
         // first makes it win for matching requests.
         let mut admin = route_with_status(Method::Get, "/users", 201);
         admin.when = Some(RequestMatch {
-            query: [("role".to_string(), "admin".to_string())].into(),
+            query: [("role".to_string(), FieldMatcher::Exact("admin".to_string()))].into(),
             ..Default::default()
         });
         let generic = route_with_status(Method::Get, "/users", 200);
@@ -449,6 +729,310 @@ mod tests {
     fn rejects_empty_pattern() {
         let routes = vec![route(Method::Get, "/")];
         assert!(Router::new(routes).is_err());
+    }
+
+    // ------------------------------------------------------------------
+    // Matcher operators (matches / contains)
+    // ------------------------------------------------------------------
+
+    fn query_matcher_route(pattern: &str) -> Router {
+        let mut r = route(Method::Get, "/x");
+        r.when = Some(RequestMatch {
+            query: [(
+                "v".to_string(),
+                FieldMatcher::Matches(MatchesMatcher {
+                    matches: pattern.to_string(),
+                }),
+            )]
+            .into(),
+            ..Default::default()
+        });
+        Router::new(vec![r]).unwrap()
+    }
+
+    #[test]
+    fn query_regex_matcher_anchors_are_explicit() {
+        let router = query_matcher_route("^b+");
+        let (mut q, h, b) = empty_inputs();
+        q.insert("v".into(), "bbb".into());
+        assert!(router.resolve(Method::Get, "/x", &q, &h, &b).is_some());
+        q.insert("v".into(), "abb".into());
+        assert!(router.resolve(Method::Get, "/x", &q, &h, &b).is_none());
+    }
+
+    #[test]
+    fn query_regex_matcher_is_case_sensitive() {
+        let router = query_matcher_route("^A$");
+        let (mut q, h, b) = empty_inputs();
+        q.insert("v".into(), "a".into());
+        assert!(router.resolve(Method::Get, "/x", &q, &h, &b).is_none());
+    }
+
+    #[test]
+    fn query_contains_matcher() {
+        let mut r = route(Method::Get, "/x");
+        r.when = Some(RequestMatch {
+            query: [(
+                "env".to_string(),
+                FieldMatcher::Contains(ContainsMatcher {
+                    contains: "stag".to_string(),
+                }),
+            )]
+            .into(),
+            ..Default::default()
+        });
+        let router = Router::new(vec![r]).unwrap();
+        let (mut q, h, b) = empty_inputs();
+        q.insert("env".into(), "staging-eu".into());
+        assert!(router.resolve(Method::Get, "/x", &q, &h, &b).is_some());
+        q.insert("env".into(), "production".into());
+        assert!(router.resolve(Method::Get, "/x", &q, &h, &b).is_none());
+    }
+
+    #[test]
+    fn header_regex_is_case_sensitive_but_exact_is_not() {
+        let mut r = route(Method::Get, "/x");
+        r.when = Some(RequestMatch {
+            headers: [(
+                "Authorization".to_string(),
+                FieldMatcher::Matches(MatchesMatcher {
+                    matches: "^Bearer ".to_string(),
+                }),
+            )]
+            .into(),
+            ..Default::default()
+        });
+        let router = Router::new(vec![r]).unwrap();
+        let (q, mut h, b) = empty_inputs();
+        h.insert("authorization".into(), "Bearer abc".into());
+        assert!(router.resolve(Method::Get, "/x", &q, &h, &b).is_some());
+        h.insert("authorization".into(), "bearer abc".into());
+        assert!(router.resolve(Method::Get, "/x", &q, &h, &b).is_none());
+    }
+
+    #[test]
+    fn body_matches_operator() {
+        let mut r = route(Method::Post, "/x");
+        r.when = Some(RequestMatch {
+            body: Some(json!({"email": {"matches": ".*@example\\.com$"}})),
+            ..Default::default()
+        });
+        let router = Router::new(vec![r]).unwrap();
+        let (q, h, _) = empty_inputs();
+        let ok = json!({"email": "bob@example.com", "extra": 1});
+        assert!(router.resolve(Method::Post, "/x", &q, &h, &ok).is_some());
+        let bad = json!({"email": "bob@evil.com"});
+        assert!(router.resolve(Method::Post, "/x", &q, &h, &bad).is_none());
+    }
+
+    #[test]
+    fn body_contains_operator() {
+        let mut r = route(Method::Post, "/x");
+        r.when = Some(RequestMatch {
+            body: Some(json!({"message": {"contains": "boom"}})),
+            ..Default::default()
+        });
+        let router = Router::new(vec![r]).unwrap();
+        let (q, h, _) = empty_inputs();
+        let ok = json!({"message": "it went boom here"});
+        assert!(router.resolve(Method::Post, "/x", &q, &h, &ok).is_some());
+        let bad = json!({"message": "all good"});
+        assert!(router.resolve(Method::Post, "/x", &q, &h, &bad).is_none());
+    }
+
+    #[test]
+    fn body_operator_requires_string_actual() {
+        let mut r = route(Method::Post, "/x");
+        r.when = Some(RequestMatch {
+            body: Some(json!({"count": {"matches": "[0-9]+"}})),
+            ..Default::default()
+        });
+        let router = Router::new(vec![r]).unwrap();
+        let (q, h, _) = empty_inputs();
+        let number = json!({"count": 42});
+        assert!(router
+            .resolve(Method::Post, "/x", &q, &h, &number)
+            .is_none());
+    }
+
+    #[test]
+    fn body_operator_needs_exactly_one_key() {
+        let mut r = route(Method::Post, "/x");
+        r.when = Some(RequestMatch {
+            body: Some(json!({"filter": {"matches": "a", "other": 1}})),
+            ..Default::default()
+        });
+        let router = Router::new(vec![r]).unwrap();
+        let (q, h, _) = empty_inputs();
+        let ok = json!({"filter": {"matches": "a", "other": 1}, "z": 0});
+        assert!(router.resolve(Method::Post, "/x", &q, &h, &ok).is_some());
+        let bad = json!({"filter": "a"});
+        assert!(router.resolve(Method::Post, "/x", &q, &h, &bad).is_none());
+    }
+
+    #[test]
+    fn body_operator_requires_string_pattern() {
+        let mut r = route(Method::Post, "/x");
+        r.when = Some(RequestMatch {
+            body: Some(json!({"filter": {"matches": 42}})),
+            ..Default::default()
+        });
+        let router = Router::new(vec![r]).unwrap();
+        let (q, h, _) = empty_inputs();
+        let ok = json!({"filter": {"matches": 42}});
+        assert!(router.resolve(Method::Post, "/x", &q, &h, &ok).is_some());
+    }
+
+    #[test]
+    fn rejects_invalid_regex_with_field_path() {
+        let mut r = route(Method::Get, "/x");
+        r.when = Some(RequestMatch {
+            query: [(
+                "q".to_string(),
+                FieldMatcher::Matches(MatchesMatcher {
+                    matches: "(unclosed".to_string(),
+                }),
+            )]
+            .into(),
+            ..Default::default()
+        });
+        let err = Router::new(vec![r]).unwrap_err();
+        match err {
+            RouterError::InvalidRegex {
+                route_index: 0,
+                field,
+                ..
+            } => assert_eq!(field, "when.query.q"),
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rejects_invalid_body_regex_with_path() {
+        let mut r = route(Method::Post, "/x");
+        r.when = Some(RequestMatch {
+            body: Some(json!({"user": {"email": {"matches": "["}}})),
+            ..Default::default()
+        });
+        let err = Router::new(vec![r]).unwrap_err();
+        match err {
+            RouterError::InvalidRegex {
+                route_index: 0,
+                field,
+                ..
+            } => assert_eq!(field, "when.body.user.email.matches"),
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn match_when_explains_the_first_failing_condition() {
+        let mut when = RequestMatch::default();
+        when.query
+            .insert("role".to_string(), FieldMatcher::Exact("admin".to_string()));
+        let compiled = compile_when(&when).unwrap();
+        let (q, h, b) = empty_inputs();
+        let reason = match_when(Some(&compiled), &q, &h, &b).unwrap_err();
+        assert_eq!(reason, "query \"role\" is missing");
+    }
+
+    #[test]
+    fn sensitive_header_values_are_never_explained() {
+        let mut when = RequestMatch::default();
+        when.headers.insert(
+            "Authorization".to_string(),
+            FieldMatcher::Matches(MatchesMatcher {
+                matches: "^Bearer ".to_string(),
+            }),
+        );
+        let compiled = compile_when(&when).unwrap();
+        let (q, mut h, b) = empty_inputs();
+        h.insert("authorization".into(), "Basic super-secret".into());
+        let reason = match_when(Some(&compiled), &q, &h, &b).unwrap_err();
+        assert_eq!(
+            reason,
+            "header \"authorization\": value did not match the expected matcher"
+        );
+        assert!(!reason.contains("super-secret"));
+    }
+
+    #[test]
+    fn regular_header_mismatch_still_shows_values() {
+        let mut when = RequestMatch::default();
+        when.headers.insert(
+            "X-Environment".to_string(),
+            FieldMatcher::Exact("staging".to_string()),
+        );
+        let compiled = compile_when(&when).unwrap();
+        let (q, mut h, b) = empty_inputs();
+        h.insert("x-environment".into(), "production".into());
+        let reason = match_when(Some(&compiled), &q, &h, &b).unwrap_err();
+        assert_eq!(
+            reason,
+            "header \"x-environment\": expected \"staging\", got \"production\""
+        );
+    }
+
+    #[test]
+    fn query_mismatch_never_includes_actual_value() {
+        let mut when = RequestMatch::default();
+        when.query.insert(
+            "token".to_string(),
+            FieldMatcher::Matches(MatchesMatcher {
+                matches: "^abc".to_string(),
+            }),
+        );
+        let compiled = compile_when(&when).unwrap();
+        let (mut q, h, b) = empty_inputs();
+        q.insert("token".into(), "super-secret-token".into());
+        let reason = match_when(Some(&compiled), &q, &h, &b).unwrap_err();
+        assert_eq!(reason, "query \"token\": value does not match /^abc/");
+        assert!(!reason.contains("super-secret-token"));
+    }
+
+    #[test]
+    fn body_literal_mismatch_never_includes_actual_value() {
+        let when = RequestMatch {
+            body: Some(json!({"password": "foo"})),
+            ..Default::default()
+        };
+        let compiled = compile_when(&when).unwrap();
+        let (q, h, _) = empty_inputs();
+        let body = json!({"username": "alice", "password": "my-secret-password"});
+        let reason = match_when(Some(&compiled), &q, &h, &body).unwrap_err();
+        assert_eq!(reason, "body.password: expected \"foo\", got a string");
+        assert!(!reason.contains("my-secret-password"));
+    }
+
+    #[test]
+    fn body_operator_mismatch_never_includes_actual_value() {
+        let when = RequestMatch {
+            body: Some(json!({"email": {"matches": ".*@example\\.com$"}})),
+            ..Default::default()
+        };
+        let compiled = compile_when(&when).unwrap();
+        let (q, h, _) = empty_inputs();
+        let body = json!({"email": "alice@evil.com"});
+        let reason = match_when(Some(&compiled), &q, &h, &body).unwrap_err();
+        assert_eq!(
+            reason,
+            "body.email: value does not match /.*@example\\.com$/"
+        );
+        assert!(!reason.contains("alice@evil.com"));
+    }
+
+    #[test]
+    fn body_type_mismatch_reports_type_not_value() {
+        let when = RequestMatch {
+            body: Some(json!({"user": {"name": "x"}})),
+            ..Default::default()
+        };
+        let compiled = compile_when(&when).unwrap();
+        let (q, h, _) = empty_inputs();
+        let body = json!({"user": "secret-name"});
+        let reason = match_when(Some(&compiled), &q, &h, &body).unwrap_err();
+        assert_eq!(reason, "body.user: expected an object, got a string");
+        assert!(!reason.contains("secret-name"));
     }
 
     // -----------------------------------------------------------------
