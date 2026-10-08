@@ -28,8 +28,8 @@ day-to-day work of microservice developers.
 
 - HTTP methods: `GET`, `POST`, `PUT`, `PATCH`, `DELETE`
 - Path parameters: `/users/{id}`
-- Request matching on query parameters, headers (case-insensitive) and JSON body
-  (subset match)
+- Request matching with exact, substring (`contains`) and regex (`matches`)
+  matchers on query parameters, headers and JSON body fields
 - Response bodies as JSON, with templating:
   - `{{path.id}}`
   - `{{query.role}}`
@@ -134,18 +134,37 @@ All conditions are optional; all present conditions must be satisfied.
 ```yaml
 when:
   query:
-    role: admin
+    role: admin                          # exact match
+    email:
+      matches: "^[^@]+@example\\.com$"     # regular expression
+    name:
+      contains: alice                    # substring
   headers:
     X-Tenant-Id: tenant-a
   body:
     username: admin
+    email:
+      matches: ".*@example\\.com$"
 ```
 
-- `query`: required query parameters (exact match).
-- `headers`: required headers (matched case-insensitively).
-- `body`: a JSON object that must be a **subset** of the request body. Every
+- `query` / `headers`: each value is one of:
+  - a plain string — exact match;
+  - `matches: <regex>` — regular expression (not anchored, use `^...$` for a
+    full match; `(?i)` for case-insensitivity);
+  - `contains: <substring>` — substring match.
+
+  A matcher object must have exactly one key; anything else is a config
+  error.
+- Header names and exact header values are matched case-insensitively;
+  `matches` and `contains` are case-sensitive.
+- `body`: a JSON pattern that must be a **subset** of the request body. Every
   field you list must be present and equal; extra fields in the request are
   ignored. Arrays must match element-by-element with the same length.
+  Inside the pattern, an object with exactly one key `matches`/`contains`
+  and a string value is a matcher operator applied to the corresponding
+  string value of the request body (as in the example above). Objects with
+  more keys — or non-string values — are literal. Operators never match a
+  non-string value in the request body.
 
 ### `response`
 
@@ -252,6 +271,14 @@ RUST_LOG=mockd=warn mockd serve mocks.yaml     # quieter
 RUST_LOG=mockd=debug mockd serve mocks.yaml    # verbose (includes delays)
 ```
 
+At the `debug` level mockd also explains route selection: why each candidate
+route was skipped (`method mismatch`, `path mismatch`, or the exact `when`
+condition that failed, e.g. `query "role": expected "admin"`) and which
+route matched. Useful when a request unexpectedly returns 404. Actual
+request values are never logged for query parameters and body fields (type
+mismatches report the JSON type instead), and sensitive headers
+(`Authorization`, `Cookie`, ...) are reported without their values.
+
 ### Editor support (JSON Schema)
 
 A [JSON Schema](https://json-schema.org/) for the configuration file is
@@ -284,7 +311,7 @@ Mockd is a single crate split into focused modules:
 
 ```
 src/
-├── main.rs       # CLI (clap): `serve` and `validate`
+├── main.rs       # CLI (clap): `serve`, `validate` and `generate`
 ├── lib.rs        # library root
 ├── config.rs     # domain models + YAML loading
 ├── router.rs     # request matching (server-agnostic)
@@ -307,14 +334,19 @@ an ephemeral port.
 
 ## Roadmap
 
-The following are planned for future releases, in rough priority order:
+Planned next releases:
 
-- Stateful responses (`state:`)
-- OpenAPI import (`mockd import openapi.yaml`)
-- Request recording / replay
+- **v0.4 — HTTP/DX**: `HEAD` and full `OPTIONS` support, richer `validate`
+  errors (exact config path, e.g. `routes[2].when.query.email`), warnings
+  for shadowed routes
+- **v0.5 — completing the core**: multiple response headers (`Set-Cookie`),
+  percent-decoding of query values and path parameters, minimal non-JSON
+  body support (matching + templates)
+- **1.0 — polish**: CLI UX, full matcher documentation, an edge-case
+  integration test suite, YAML schema freeze
 
-The following are explicitly **out of scope** for now: GUI/Web UI, Kubernetes
-operator, gRPC, GraphQL, state machines.
+Out of scope: GUI/Web UI, database, OpenAPI import, gRPC, GraphQL,
+WebSockets, proxy/passthrough, plugin systems.
 
 See [CHANGELOG.md](CHANGELOG.md) for what is included in this release.
 
