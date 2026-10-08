@@ -26,7 +26,8 @@ day-to-day work of microservice developers.
 
 ## Features
 
-- HTTP methods: `GET`, `POST`, `PUT`, `PATCH`, `DELETE`
+- HTTP methods: `GET`, `POST`, `PUT`, `PATCH`, `DELETE`, `OPTIONS`
+- `HEAD` is answered by `GET` routes: same status and headers, no body
 - Path parameters: `/users/{id}`
 - Request matching with exact, substring (`contains`) and regex (`matches`)
   matchers on query parameters, headers and JSON body fields
@@ -122,7 +123,7 @@ covering matching, templates, delays and errors.
 
 | field     | type     | description                                   |
 | --------- | -------- | --------------------------------------------- |
-| `method`  | enum     | `GET`/`POST`/`PUT`/`PATCH`/`DELETE`           |
+| `method`  | enum     | `GET`/`POST`/`PUT`/`PATCH`/`DELETE`/`OPTIONS` |
 | `path`    | string   | Path pattern, e.g. `/users/{id}`              |
 | `when`    | match?   | Optional request matcher (see below)          |
 | `response`| response | Response produced when the route matches      |
@@ -254,8 +255,9 @@ Pass `--cors` to enable permissive cross-origin support:
 
 - Every response gets `Access-Control-Allow-Origin: *`.
 - `OPTIONS` preflight requests (i.e. they carry `Access-Control-Request-Method`)
-  are answered with `204 No Content` **without** consulting the routes. The
-  `Access-Control-Allow-Headers` value is echoed from the request.
+  are answered with `204 No Content` **without consulting the routes**. The
+  `Access-Control-Allow-Headers` value is echoed from the request. Plain
+  (non-preflight) `OPTIONS` requests are routed normally.
 
 This is intended for local development where the mock server and the frontend
 run on different origins (e.g. `localhost:8080` mock + `localhost:3000` Vite).

@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`OPTIONS` as a routable method** — routes with `method: OPTIONS` now
+  receive non-preflight `OPTIONS` requests. CORS preflights (`OPTIONS` with
+  `Access-Control-Request-Method`) are still intercepted by `--cors` before
+  route matching.
+- **`HEAD` support** — `HEAD` requests are answered by `GET` routes with the
+  same status and headers (including `Content-Length`) but no body,
+  per RFC 9110.
+
 ## [0.3.0] - 2026-10-08
 
 ### Added

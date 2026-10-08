@@ -41,6 +41,7 @@ pub enum Method {
     Put,
     Patch,
     Delete,
+    Options,
 }
 
 impl Method {
@@ -54,6 +55,7 @@ impl Method {
             "PUT" => Some(Method::Put),
             "PATCH" => Some(Method::Patch),
             "DELETE" => Some(Method::Delete),
+            "OPTIONS" => Some(Method::Options),
             _ => None,
         }
     }
@@ -66,6 +68,7 @@ impl Method {
             Method::Put => "PUT",
             Method::Patch => "PATCH",
             Method::Delete => "DELETE",
+            Method::Options => "OPTIONS",
         }
     }
 }
@@ -405,12 +408,16 @@ mod tests {
 
         let back: String = serde_yaml::to_string(&method).unwrap();
         assert!(back.contains("GET"));
+
+        let options: Method = serde_yaml::from_str("OPTIONS").unwrap();
+        assert_eq!(options, Method::Options);
     }
 
     #[test]
     fn method_from_http_str_is_case_insensitive() {
         assert_eq!(Method::from_http_str("get"), Some(Method::Get));
         assert_eq!(Method::from_http_str("Delete"), Some(Method::Delete));
+        assert_eq!(Method::from_http_str("options"), Some(Method::Options));
         assert_eq!(Method::from_http_str("FOO"), None);
     }
 
