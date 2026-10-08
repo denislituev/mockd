@@ -17,6 +17,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   same status and headers (including `Content-Length`) but no body,
   per RFC 9110.
 
+### Changed
+
+- **Parse errors now include the exact config path** — invalid values are
+  reported as `routes[0].method: unknown variant ...`,
+  `routes[2].when.query.email: invalid matcher: ...` instead of a generic
+  `data did not match any variant of untagged enum`. Messages for invalid
+  matchers and responses spell out the expected shape. Powered by
+  `serde_path_to_error`.
+  *Breaking for library users:* `ConfigError::Parse` is now a struct variant
+  `Parse { message, source }` instead of a tuple `Parse(serde_yaml::Error)`;
+  the underlying error is available via `source()` instead of destructuring.
+
 ## [0.3.0] - 2026-10-08
 
 ### Added
