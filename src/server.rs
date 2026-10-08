@@ -172,9 +172,16 @@ async fn handler(
         return cors_preflight(&headers);
     }
 
-    let Some(core_method) = Method::from_http_str(method.as_str()) else {
-        tracing::info!(%method_str, %path, status = 404, "unsupported method");
-        return not_found(state.cors);
+    // HEAD is answered by GET routes (RFC 9110): same routing, status and
+    // headers, no body.
+    let core_method = if method == AxumMethod::HEAD {
+        Method::Get
+    } else {
+        let Some(core_method) = Method::from_http_str(method.as_str()) else {
+            tracing::info!(%method_str, %path, status = 404, "unsupported method");
+            return not_found(state.cors);
+        };
+        core_method
     };
 
     let query = parse_query(uri.query().unwrap_or(""));

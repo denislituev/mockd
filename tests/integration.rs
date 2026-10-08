@@ -179,6 +179,14 @@ routes:
       status: 422
       body:
         error: invalid email
+
+  # Explicit OPTIONS route (non-preflight OPTIONS requests are routed).
+  - method: OPTIONS
+    path: /resources
+    response:
+      status: 204
+      headers:
+        Allow: "GET, POST, OPTIONS"
 "#;
 
 /// Bind a mockd server to an ephemeral port, spawn it, and return its base URL.
@@ -492,6 +500,57 @@ async fn body_regex_operator_selects_route() {
         .await
         .unwrap();
     assert_eq!(miss.status(), 422);
+}
+
+// ---------------------------------------------------------------------------
+// HEAD / OPTIONS
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn head_is_answered_by_get_routes_without_body() {
+    let base = spawn().await;
+    let client = reqwest::Client::new();
+
+    let resp = client.head(format!("{base}/health")).send().await.unwrap();
+    assert_eq!(resp.status(), 200);
+    let text = resp.text().await.unwrap();
+    assert!(text.is_empty());
+}
+
+#[tokio::test]
+async fn head_on_unknown_route_is_404() {
+    let base = spawn().await;
+    let client = reqwest::Client::new();
+    let resp = client.head(format!("{base}/nope")).send().await.unwrap();
+    assert_eq!(resp.status(), 404);
+}
+
+#[tokio::test]
+async fn options_route_is_matched() {
+    let base = spawn().await;
+    let client = reqwest::Client::new();
+    let resp = client
+        .request(reqwest::Method::OPTIONS, format!("{base}/resources"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 204);
+    assert_eq!(resp.headers()["allow"], "GET, POST, OPTIONS");
+}
+
+#[tokio::test]
+async fn non_preflight_options_with_cors_goes_to_routes() {
+    // Only preflights (OPTIONS + Access-Control-Request-Method) are
+    // intercepted by --cors; plain OPTIONS is routed normally.
+    let base = spawn_cors().await;
+    let client = reqwest::Client::new();
+    let resp = client
+        .request(reqwest::Method::OPTIONS, format!("{base}/resources"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 204);
+    assert_eq!(resp.headers()["allow"], "GET, POST, OPTIONS");
 }
 
 // ---------------------------------------------------------------------------
