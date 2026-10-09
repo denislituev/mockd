@@ -20,5 +20,5 @@ pub mod server;
 pub mod template;
 
 pub use config::{Config, ConfigError};
-pub use router::{Match, Router, RouterError};
+pub use router::{shadowed_routes, Match, Router, RouterError};
 pub use server::{build_app, Server, ServerError};

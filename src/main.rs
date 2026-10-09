@@ -13,6 +13,7 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand};
 
 use mockd::config::Config;
+use mockd::router::shadowed_routes;
 use mockd::server::Server;
 
 /// A lightweight standalone mock HTTP server driven by a YAML config.
@@ -74,8 +75,20 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         }
         Command::Validate { config } => {
             let cfg = Config::from_file(&config)?;
+            let warnings: Vec<String> = shadowed_routes(&cfg.routes)
+                .into_iter()
+                .map(|(shadowed, by)| {
+                    format!(
+                        "route {shadowed} ({}) is unreachable: it is shadowed by earlier route {by} ({})",
+                        cfg.routes[shadowed].path, cfg.routes[by].path
+                    )
+                })
+                .collect();
             // Compile the routes to catch path-pattern errors too.
             let server = Server::from_config(cfg)?;
+            for warning in warnings {
+                tracing::warn!("{warning}");
+            }
             tracing::info!(
                 "config is valid: {} route(s) registered",
                 server.route_count()

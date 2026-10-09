@@ -102,7 +102,8 @@ mockd validate mocks.yaml
 ```
 
 Parse errors point to the exact place in the config, e.g.
-`routes[0].when.query.email: invalid matcher: ...`.
+`routes[0].when.query.email: invalid matcher: ...`. `validate` also warns
+about routes that can never match because an earlier route shadows them.
 
 For browser/SPA testing, enable CORS:
 

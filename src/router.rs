@@ -253,6 +253,58 @@ fn match_path(segments: &[Segment], request: &[&str]) -> Option<HashMap<String, 
     Some(params)
 }
 
+/// Detect routes that can never match because an earlier route accepts
+/// every request they could.
+///
+/// Returns `(shadowed_index, shadowing_index)` pairs. Conservative: a route
+/// is reported only when an earlier route has the same method, a path
+/// pattern at least as general segment by segment, and no `when` conditions
+/// (or conditions identical to the shadowed route's).
+pub fn shadowed_routes(routes: &[Route]) -> Vec<(usize, usize)> {
+    let mut result = Vec::new();
+    for (later_index, later) in routes.iter().enumerate() {
+        for (earlier_index, earlier) in routes[..later_index].iter().enumerate() {
+            if earlier.method != later.method {
+                continue;
+            }
+            if !path_covers(&earlier.path, &later.path) {
+                continue;
+            }
+            let earlier_unconditional = match &earlier.when {
+                None => true,
+                Some(when) => is_empty_match(when),
+            };
+            let same_conditions = earlier.when.is_some() && earlier.when == later.when;
+            if !earlier_unconditional && !same_conditions {
+                continue;
+            }
+            result.push((later_index, earlier_index));
+            break;
+        }
+    }
+    result
+}
+
+/// Whether `general` matches every path that `specific` matches.
+///
+/// Invalid patterns never cover anything; `Server::from_config` reports
+/// them separately.
+fn path_covers(general: &str, specific: &str) -> bool {
+    let (Ok(general), Ok(specific)) = (compile_path(general), compile_path(specific)) else {
+        return false;
+    };
+    general.len() == specific.len()
+        && general
+            .iter()
+            .zip(specific.iter())
+            .all(|(g, s)| matches!(g, Segment::Param(_)) || g == s)
+}
+
+/// Whether a `when` block imposes no conditions at all.
+fn is_empty_match(when: &RequestMatch) -> bool {
+    when.query.is_empty() && when.headers.is_empty() && when.body.is_none()
+}
+
 /// Compile a `when` block: precompile regexes and lowercase header keys.
 ///
 /// The error carries the config path of the offending field (e.g.
@@ -638,6 +690,92 @@ mod tests {
         let (q, h, b) = empty_inputs();
         let m = router.resolve(Method::Get, "/users/1", &q, &h, &b).unwrap();
         assert_eq!(m.response.status, 200);
+    }
+
+    #[test]
+    fn unconditional_route_shadows_conditional_one() {
+        let mut conditional = route(Method::Get, "/users");
+        conditional.when = Some(RequestMatch {
+            query: [("role".to_string(), FieldMatcher::Exact("admin".to_string()))].into(),
+            ..Default::default()
+        });
+        let routes = vec![route(Method::Get, "/users"), conditional];
+        assert_eq!(shadowed_routes(&routes), vec![(1, 0)]);
+    }
+
+    #[test]
+    fn identical_routes_are_shadowed() {
+        let routes = vec![route(Method::Get, "/x"), route(Method::Get, "/x")];
+        assert_eq!(shadowed_routes(&routes), vec![(1, 0)]);
+    }
+
+    #[test]
+    fn identical_conditions_still_shadow() {
+        let when = RequestMatch {
+            query: [("role".to_string(), FieldMatcher::Exact("admin".to_string()))].into(),
+            ..Default::default()
+        };
+        let mut r1 = route(Method::Get, "/x");
+        r1.when = Some(when.clone());
+        let mut r2 = route(Method::Get, "/x");
+        r2.when = Some(when);
+        assert_eq!(shadowed_routes(&[r1, r2]), vec![(1, 0)]);
+    }
+
+    #[test]
+    fn param_pattern_shadows_literal() {
+        let routes = vec![
+            route(Method::Get, "/users/{id}"),
+            route(Method::Get, "/users/5"),
+        ];
+        assert_eq!(shadowed_routes(&routes), vec![(1, 0)]);
+    }
+
+    #[test]
+    fn literal_before_param_pattern_is_not_shadowed() {
+        let routes = vec![
+            route(Method::Get, "/users/5"),
+            route(Method::Get, "/users/{id}"),
+        ];
+        assert!(shadowed_routes(&routes).is_empty());
+    }
+
+    #[test]
+    fn different_methods_are_not_shadowed() {
+        let routes = vec![route(Method::Get, "/x"), route(Method::Post, "/x")];
+        assert!(shadowed_routes(&routes).is_empty());
+    }
+
+    #[test]
+    fn different_path_lengths_are_not_shadowed() {
+        let routes = vec![route(Method::Get, "/x"), route(Method::Get, "/x/y")];
+        assert!(shadowed_routes(&routes).is_empty());
+    }
+
+    #[test]
+    fn conditional_earlier_route_does_not_shadow() {
+        let mut conditional = route(Method::Get, "/x");
+        conditional.when = Some(RequestMatch {
+            query: [("role".to_string(), FieldMatcher::Exact("admin".to_string()))].into(),
+            ..Default::default()
+        });
+        let routes = vec![conditional, route(Method::Get, "/x")];
+        assert!(shadowed_routes(&routes).is_empty());
+    }
+
+    #[test]
+    fn trailing_slashes_are_equivalent() {
+        let routes = vec![route(Method::Get, "/users/"), route(Method::Get, "/users")];
+        assert_eq!(shadowed_routes(&routes), vec![(1, 0)]);
+    }
+
+    #[test]
+    fn invalid_path_patterns_are_not_reported() {
+        let routes = vec![
+            route(Method::Get, "/users/{id"),
+            route(Method::Get, "/users/5"),
+        ];
+        assert!(shadowed_routes(&routes).is_empty());
     }
 
     #[test]
