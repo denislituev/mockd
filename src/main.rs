@@ -56,7 +56,7 @@ fn main() -> ExitCode {
     match run(cli) {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
-            tracing::error!("{err:#}");
+            tracing::error!("{err}");
             ExitCode::FAILURE
         }
     }

@@ -101,6 +101,9 @@ Validate a config without serving:
 mockd validate mocks.yaml
 ```
 
+Parse errors point to the exact place in the config, e.g.
+`routes[0].when.query.email: invalid matcher: ...`.
+
 For browser/SPA testing, enable CORS:
 
 ```bash

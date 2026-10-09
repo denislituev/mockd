@@ -329,7 +329,11 @@ fn default_listen() -> String {
 impl Config {
     /// Parse a configuration from a YAML string.
     pub fn parse(input: &str) -> Result<Self, ConfigError> {
-        serde_yaml::from_str(input).map_err(ConfigError::from)
+        let de = serde_yaml::Deserializer::from_str(input);
+        serde_path_to_error::deserialize(de).map_err(|err| ConfigError::Parse {
+            message: format_parse_error(&err),
+            source: err,
+        })
     }
 
     /// Load and parse a configuration from a file.
@@ -359,8 +363,50 @@ pub enum ConfigError {
     Read(#[source] std::io::Error),
 
     /// The YAML could not be parsed into a [`Config`].
-    #[error("could not parse config: {0}")]
-    Parse(#[from] serde_yaml::Error),
+    #[error("could not parse config: {message}")]
+    Parse {
+        /// Human-readable message with the exact config path.
+        message: String,
+        /// The original error, preserved as `source` for programmatic access.
+        #[source]
+        source: serde_path_to_error::Error<serde_yaml::Error>,
+    },
+}
+
+/// Format a parse error with its config path and a friendlier message for
+/// untagged enums (`FieldMatcher`, `ResponseSpec`).
+fn format_parse_error(err: &serde_path_to_error::Error<serde_yaml::Error>) -> String {
+    let path = err.path().to_string();
+    let inner = err.inner();
+    let mut detail = inner.to_string();
+
+    let untagged = [
+        (
+            "untagged enum FieldMatcher",
+            "invalid matcher: expected a plain string, or an object with exactly one 'matches' or 'contains' key (string value)",
+        ),
+        (
+            "untagged enum ResponseSpec",
+            "invalid response: expected response fields (status, headers, body, delay, close_connection) or a 'sequence' of responses",
+        ),
+    ];
+    for (needle, friendly) in untagged {
+        if detail.contains(needle) {
+            // The raw message is replaced wholesale, so re-attach the YAML
+            // location that the friendly text no longer carries.
+            detail = friendly.to_string();
+            if let Some(loc) = inner.location() {
+                detail = format!("{detail} at line {} column {}", loc.line(), loc.column());
+            }
+            break;
+        }
+    }
+
+    if path == "." || detail.starts_with(&path) {
+        detail
+    } else {
+        format!("{path}: {detail}")
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -472,6 +518,43 @@ routes:
     fn unknown_method_is_rejected() {
         let yaml = "routes:\n  - method: FOO\n    path: /x\n";
         assert!(Config::parse(yaml).is_err());
+    }
+
+    #[test]
+    fn parse_error_includes_config_path() {
+        let yaml = "routes:\n  - method: FOO\n    path: /x\n";
+        let err = Config::parse(yaml).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("routes[0].method"), "got: {msg}");
+        assert!(msg.contains("FOO"), "got: {msg}");
+    }
+
+    #[test]
+    fn parse_error_names_invalid_matcher() {
+        let yaml = "routes:\n  - method: GET\n    path: /x\n    when:\n      query:\n        email:\n          regex: nope\n";
+        let err = Config::parse(yaml).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("routes[0].when.query.email"), "got: {msg}");
+        assert!(msg.contains("invalid matcher"), "got: {msg}");
+    }
+
+    #[test]
+    fn parse_error_names_invalid_response() {
+        let yaml = "routes:\n  - method: GET\n    path: /x\n    response:\n      status: abc\n";
+        let err = Config::parse(yaml).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("routes[0].response"), "got: {msg}");
+        assert!(msg.contains("invalid response"), "got: {msg}");
+    }
+
+    #[test]
+    fn parse_error_keeps_source() {
+        use std::error::Error as _;
+
+        let yaml = "routes:\n  - method: FOO\n    path: /x\n";
+        let err = Config::parse(yaml).unwrap_err();
+        let source = err.source().expect("parse error should keep its source");
+        assert!(source.to_string().contains("FOO"), "got: {source}");
     }
 
     #[test]
