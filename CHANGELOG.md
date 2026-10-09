@@ -16,6 +16,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`HEAD` support** — `HEAD` requests are answered by `GET` routes with the
   same status and headers (including `Content-Length`) but no body,
   per RFC 9110.
+- **Shadowed-route warnings in `mockd validate`** — warns when an earlier
+  route with the same method and a same-or-more-general path pattern (and
+  no `when` conditions) makes a later route unreachable due to
+  first-match-wins, e.g. `route 1 (/users) is unreachable: it is shadowed
+  by earlier route 0 (/users)`. The check is conservative: it only reports
+  clear cases and never fails validation.
 
 ### Changed
 
