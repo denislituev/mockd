@@ -342,9 +342,6 @@ an ephemeral port.
 
 Planned next releases:
 
-- **v0.4 — HTTP/DX**: `HEAD` and full `OPTIONS` support, richer `validate`
-  errors (exact config path, e.g. `routes[2].when.query.email`), warnings
-  for shadowed routes
 - **v0.5 — completing the core**: multiple response headers (`Set-Cookie`),
   percent-decoding of query values and path parameters, minimal non-JSON
   body support (matching + templates)
