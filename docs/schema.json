@@ -58,6 +58,22 @@
         }
       ]
     },
+    "HeaderValues": {
+      "description": "One or more values for a response header.\n\nA plain YAML string sets a single value; a list sets the header multiple times (e.g. several `Set-Cookie` headers):\n\n```yaml headers: Set-Cookie: - \"session=abc; Path=/\" - \"theme=dark; Path=/\" ```",
+      "anyOf": [
+        {
+          "description": "A single header value.",
+          "type": "string"
+        },
+        {
+          "description": "Several values for the same header name.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      ]
+    },
     "MatchesMatcher": {
       "description": "`matches:` — regular-expression matcher.",
       "type": "object",
@@ -129,11 +145,11 @@
           ]
         },
         "headers": {
-          "description": "Response headers.",
+          "description": "Response headers.\n\nA value is a single string or a list of strings for repeated headers (see [`HeaderValues`]).",
           "default": {},
           "type": "object",
           "additionalProperties": {
-            "type": "string"
+            "$ref": "#/definitions/HeaderValues"
           }
         },
         "status": {
