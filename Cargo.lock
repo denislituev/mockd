@@ -789,6 +789,7 @@ dependencies = [
  "axum",
  "clap",
  "humantime",
+ "percent-encoding",
  "rand",
  "regex",
  "reqwest",
