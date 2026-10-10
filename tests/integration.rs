@@ -191,6 +191,18 @@ routes:
       body:
         greeting: "Hello, {{query.name}}!"
 
+  # Multiple values for the same response header.
+  - method: GET
+    path: /cookies
+    response:
+      status: 200
+      headers:
+        Set-Cookie:
+          - "session=abc; Path=/"
+          - "theme=dark; Path=/"
+      body:
+        ok: true
+
   # Explicit OPTIONS route (non-preflight OPTIONS requests are routed).
   - method: OPTIONS
     path: /resources
@@ -642,4 +654,18 @@ async fn percent_encoded_path_param_renders_decoded() {
     assert_eq!(resp.status(), 200);
     let v = body(resp).await;
     assert_eq!(v["name"], json!("User John Doe"));
+}
+
+#[tokio::test]
+async fn repeated_set_cookie_headers_are_all_sent() {
+    let base = spawn().await;
+    let resp = reqwest::get(format!("{base}/cookies")).await.unwrap();
+    assert_eq!(resp.status(), 200);
+    let cookies: Vec<&str> = resp
+        .headers()
+        .get_all("set-cookie")
+        .iter()
+        .map(|v| v.to_str().unwrap())
+        .collect();
+    assert_eq!(cookies, vec!["session=abc; Path=/", "theme=dark; Path=/"]);
 }
