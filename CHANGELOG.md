@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **Percent-decoding of query values and path parameters** —
+  `?name=John%20Doe` now matches `when.query.name: "John Doe"` and renders
+  `{{query.name}}` / `{{path.id}}` with the decoded value. Only `%XX`
+  sequences are decoded: `+` stays a literal plus sign, and an encoded
+  slash keeps its segment intact (`/files/a%2Fb%20c` still matches
+  `/files/{name}` with the value `a%2Fb c` — only the `%2F` escape itself
+  stays encoded).
+
 ## [0.4.0] - 2026-10-09
 
 ### Added

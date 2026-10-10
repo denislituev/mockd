@@ -232,8 +232,8 @@ async fn handler(
 
 /// Parse a raw query string into a map.
 ///
-/// Note: values are **not** percent-decoded in this MVP. Keys without a value
-/// map to an empty string.
+/// Keys and values are percent-decoded (`+` stays a literal plus sign).
+/// Keys without a value map to an empty string.
 fn parse_query(query: &str) -> HashMap<String, String> {
     let mut map = HashMap::new();
     if query.is_empty() {
@@ -243,16 +243,17 @@ fn parse_query(query: &str) -> HashMap<String, String> {
         if pair.is_empty() {
             continue;
         }
-        match pair.split_once('=') {
-            Some((k, v)) => {
-                map.insert(k.to_string(), v.to_string());
-            }
-            None => {
-                map.insert(pair.to_string(), String::new());
-            }
-        }
+        let (k, v) = pair.split_once('=').unwrap_or((pair, ""));
+        map.insert(percent_decode(k), percent_decode(v));
     }
     map
+}
+
+/// Percent-decode a query key or value; invalid escapes pass through.
+fn percent_decode(s: &str) -> String {
+    percent_encoding::percent_decode_str(s)
+        .decode_utf8_lossy()
+        .to_string()
 }
 
 /// Collect request headers into a map with lower-cased keys.
@@ -370,6 +371,31 @@ mod tests {
     #[test]
     fn parse_query_empty() {
         assert!(parse_query("").is_empty());
+    }
+
+    #[test]
+    fn parse_query_percent_decodes_keys_and_values() {
+        let q = parse_query("name=John%20Doe&caf%C3%A9=menu");
+        assert_eq!(q.get("name").unwrap(), "John Doe");
+        assert_eq!(q.get("café").unwrap(), "menu");
+    }
+
+    #[test]
+    fn parse_query_leaves_plus_literal() {
+        let q = parse_query("token=a+b");
+        assert_eq!(q.get("token").unwrap(), "a+b");
+    }
+
+    #[test]
+    fn parse_query_decodes_encoded_plus() {
+        let q = parse_query("token=a%2Bb");
+        assert_eq!(q.get("token").unwrap(), "a+b");
+    }
+
+    #[test]
+    fn parse_query_invalid_escapes_pass_through() {
+        let q = parse_query("x=100%ZZ");
+        assert_eq!(q.get("x").unwrap(), "100%ZZ");
     }
 
     #[test]

@@ -139,7 +139,9 @@ impl Router {
     ///
     /// All inputs use plain, server-agnostic types. `headers` should use
     /// lower-cased header names; header *matching* against route rules is
-    /// performed case-insensitively for exact values regardless.
+    /// performed case-insensitively for exact values regardless. The path is
+    /// percent-decoded segment by segment before matching (encoded `%2F`
+    /// keeps its segment intact).
     ///
     /// For sequence routes, each successful match advances the internal
     /// counter; the last response in the sequence is repeated forever.
@@ -154,7 +156,8 @@ impl Router {
         headers: &HashMap<String, String>,
         body: &Value,
     ) -> Option<Match> {
-        let request_segments: Vec<&str> = path_segments(path).collect();
+        let decoded = decode_path(path);
+        let request_segments: Vec<&str> = path_segments(&decoded).collect();
 
         for (index, route) in self.routes.iter().enumerate() {
             if route.method != method {
@@ -200,6 +203,32 @@ fn path_segments(path: &str) -> impl Iterator<Item = &str> {
     path.trim_end_matches('/')
         .split('/')
         .filter(|s| !s.is_empty())
+}
+
+/// Percent-decode each path segment, keeping `%2F`/`%2f` encoded.
+///
+/// A decoded slash would change the segment structure of the path, so only
+/// that escape is preserved: `/files/a%2Fb%20c` becomes one segment with
+/// the value `a%2Fb c`.
+fn decode_path(path: &str) -> String {
+    path.split('/')
+        .map(decode_segment)
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+/// Percent-decode a path segment, keeping `%2F`/`%2f` encoded: a decoded
+/// slash would change the segment structure of the path.
+fn decode_segment(seg: &str) -> String {
+    seg.replace("%2f", "%2F")
+        .split("%2F")
+        .map(|part| {
+            percent_encoding::percent_decode_str(part)
+                .decode_utf8_lossy()
+                .to_string()
+        })
+        .collect::<Vec<_>>()
+        .join("%2F")
 }
 
 /// Compile a path pattern into [`Segment`]s.
@@ -776,6 +805,53 @@ mod tests {
             route(Method::Get, "/users/5"),
         ];
         assert!(shadowed_routes(&routes).is_empty());
+    }
+
+    #[test]
+    fn path_params_are_percent_decoded() {
+        let router = Router::new(vec![route(Method::Get, "/users/{name}")]).unwrap();
+        let (q, h, b) = empty_inputs();
+        let m = router
+            .resolve(Method::Get, "/users/John%20Doe", &q, &h, &b)
+            .unwrap();
+        assert_eq!(m.path_params["name"], "John Doe");
+    }
+
+    #[test]
+    fn encoded_slash_keeps_segment_structure() {
+        // `/users/a%2Fb` is one segment: it must match `/users/{id}` and not
+        // split into an extra path segment.
+        let router = Router::new(vec![route(Method::Get, "/users/{id}")]).unwrap();
+        let (q, h, b) = empty_inputs();
+        let m = router
+            .resolve(Method::Get, "/users/a%2Fb", &q, &h, &b)
+            .unwrap();
+        assert_eq!(m.path_params["id"], "a%2Fb");
+    }
+
+    #[test]
+    fn mixed_escapes_decode_except_encoded_slash() {
+        // `%2F` stays encoded but the `%20` next to it still decodes.
+        let router = Router::new(vec![route(Method::Get, "/users/{id}")]).unwrap();
+        let (q, h, b) = empty_inputs();
+        let m = router
+            .resolve(Method::Get, "/users/a%2Fb%20c", &q, &h, &b)
+            .unwrap();
+        assert_eq!(m.path_params["id"], "a%2Fb c");
+
+        let m = router
+            .resolve(Method::Get, "/users/a%2fb%20c", &q, &h, &b)
+            .unwrap();
+        assert_eq!(m.path_params["id"], "a%2Fb c");
+    }
+
+    #[test]
+    fn decoded_literal_segment_matches_pattern_with_space() {
+        let router = Router::new(vec![route(Method::Get, "/tags/hello world")]).unwrap();
+        let (q, h, b) = empty_inputs();
+        assert!(router
+            .resolve(Method::Get, "/tags/hello%20world", &q, &h, &b)
+            .is_some());
     }
 
     #[test]

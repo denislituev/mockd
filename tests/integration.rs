@@ -180,6 +180,17 @@ routes:
       body:
         error: invalid email
 
+  # Percent-encoded query value: ?name=John%20Doe matches the decoded form.
+  - method: GET
+    path: /greet
+    when:
+      query:
+        name: "John Doe"
+    response:
+      status: 200
+      body:
+        greeting: "Hello, {{query.name}}!"
+
   # Explicit OPTIONS route (non-preflight OPTIONS requests are routed).
   - method: OPTIONS
     path: /resources
@@ -604,4 +615,31 @@ async fn cors_disabled_does_not_add_headers() {
     let resp = reqwest::get(format!("{base}/health")).await.unwrap();
     assert_eq!(resp.status(), 200);
     assert!(resp.headers().get("access-control-allow-origin").is_none());
+}
+
+#[tokio::test]
+async fn percent_encoded_query_matches_decoded_value() {
+    let base = spawn().await;
+
+    let hit = reqwest::get(format!("{base}/greet?name=John%20Doe"))
+        .await
+        .unwrap();
+    assert_eq!(hit.status(), 200);
+    assert_eq!(body(hit).await, json!({"greeting": "Hello, John Doe!"}));
+
+    let miss = reqwest::get(format!("{base}/greet?name=JohnDoe"))
+        .await
+        .unwrap();
+    assert_eq!(miss.status(), 404);
+}
+
+#[tokio::test]
+async fn percent_encoded_path_param_renders_decoded() {
+    let base = spawn().await;
+    let resp = reqwest::get(format!("{base}/users/John%20Doe"))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let v = body(resp).await;
+    assert_eq!(v["name"], json!("User John Doe"));
 }
