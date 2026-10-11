@@ -105,6 +105,9 @@ Parse errors point to the exact place in the config, e.g.
 `routes[0].when.query.email: invalid matcher: ...`. `validate` also warns
 about routes that can never match because an earlier route shadows them.
 
+Exit codes: `0` success, `1` config or runtime error, `2` CLI usage error
+— convenient for CI scripts.
+
 For browser/SPA testing, enable CORS:
 
 ```bash
