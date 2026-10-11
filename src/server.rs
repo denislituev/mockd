@@ -22,7 +22,7 @@ use axum::response::IntoResponse;
 use axum::routing::any;
 use serde_json::Value;
 
-use crate::config::{Config, HeaderValues, Method};
+use crate::config::{Config, HeaderValues, Method, ResponseConfig, ResponseSpec, Route};
 use crate::router::{Match, Router, RouterError};
 use crate::template::{render, TemplateContext};
 
@@ -56,6 +56,15 @@ pub enum ServerError {
     /// A response status code was invalid.
     #[error("invalid status code: {0}")]
     InvalidStatus(u16),
+
+    /// A response header has an invalid name, an invalid value or an empty
+    /// value list.
+    #[error("invalid response header in route {route_index}: {reason}")]
+    InvalidResponseHeader { route_index: usize, reason: String },
+
+    /// A response could not be assembled from already validated parts.
+    #[error("could not build response: {0}")]
+    Build(#[source] axum::http::Error),
 }
 
 impl Server {
@@ -63,6 +72,7 @@ impl Server {
     ///
     /// CORS is disabled by default; use [`Server::with_cors`] to enable it.
     pub fn from_config(config: Config) -> Result<Self, ServerError> {
+        validate_response_headers(&config.routes)?;
         let router = Router::new(config.routes)?;
         Ok(Server {
             router,
@@ -132,6 +142,43 @@ fn listener_local_addr(listener: &tokio::net::TcpListener) -> String {
         .local_addr()
         .map(|a| a.to_string())
         .unwrap_or_else(|_| "(unknown)".to_string())
+}
+
+/// Validate response header names and values while the config loads, so an
+/// invalid header is reported once at startup instead of failing (or
+/// panicking) while the HTTP response is built.
+fn validate_response_headers(routes: &[Route]) -> Result<(), ServerError> {
+    for (route_index, route) in routes.iter().enumerate() {
+        let responses: &[ResponseConfig] = match &route.response {
+            ResponseSpec::Single(r) => std::slice::from_ref(r),
+            ResponseSpec::Sequence { sequence } => sequence,
+        };
+        for response in responses {
+            for (name, values) in &response.headers {
+                axum::http::HeaderName::try_from(name.as_str()).map_err(|e| {
+                    ServerError::InvalidResponseHeader {
+                        route_index,
+                        reason: format!("invalid name \"{name}\": {e}"),
+                    }
+                })?;
+                if values.iter_values().next().is_none() {
+                    return Err(ServerError::InvalidResponseHeader {
+                        route_index,
+                        reason: format!("header \"{name}\" has an empty value list"),
+                    });
+                }
+                for value in values.iter_values() {
+                    axum::http::HeaderValue::try_from(value).map_err(|e| {
+                        ServerError::InvalidResponseHeader {
+                            route_index,
+                            reason: format!("invalid value for header \"{name}\": {e}"),
+                        }
+                    })?;
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Build an Axum application backed by the given router.
@@ -301,7 +348,7 @@ fn build_response(
         Vec::new()
     };
 
-    Ok(builder.body(Body::from(bytes)).unwrap())
+    builder.body(Body::from(bytes)).map_err(ServerError::Build)
 }
 
 /// Append the permissive CORS headers used for non-preflight responses.
@@ -464,6 +511,56 @@ mod tests {
             .map(|v| v.to_str().unwrap())
             .collect();
         assert_eq!(cookies, vec!["session=abc; Path=/", "theme=dark; Path=/"]);
+    }
+
+    fn server_from_yaml(yaml: &str) -> Result<Server, ServerError> {
+        let cfg = Config::parse(yaml).unwrap();
+        Server::from_config(cfg)
+    }
+
+    #[test]
+    fn invalid_header_name_is_rejected_at_load() {
+        let err = server_from_yaml(
+            "routes:\n  - method: GET\n    path: /x\n    response:\n      headers:\n        \"Bad Header\": v\n",
+        )
+        .unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("route 0"), "got: {msg}");
+        assert!(msg.contains("invalid name \"Bad Header\""), "got: {msg}");
+    }
+
+    #[test]
+    fn invalid_header_value_is_rejected_at_load() {
+        let err = server_from_yaml(
+            "routes:\n  - method: GET\n    path: /x\n    response:\n      headers:\n        X-Bad: \"line1\\nline2\"\n",
+        )
+        .unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("invalid value for header \"X-Bad\""),
+            "got: {msg}"
+        );
+    }
+
+    #[test]
+    fn empty_header_value_list_is_rejected_at_load() {
+        let err = server_from_yaml(
+            "routes:\n  - method: GET\n    path: /x\n    response:\n      headers:\n        X-Empty: []\n",
+        )
+        .unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("header \"X-Empty\" has an empty value list"),
+            "got: {msg}"
+        );
+    }
+
+    #[test]
+    fn valid_multi_value_headers_pass_validation() {
+        let server = server_from_yaml(
+            "routes:\n  - method: GET\n    path: /x\n    response:\n      headers:\n        Set-Cookie:\n          - \"a=1; Path=/\"\n          - \"b=2; Path=/\"\n",
+        );
+        assert_eq!(server.unwrap().route_count(), 1);
     }
 
     #[test]

@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.5.0] - 2026-10-11
 
 ### Added
 
@@ -34,6 +34,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   slash keeps its segment intact (`/files/a%2Fb%20c` still matches
   `/files/{name}` with the value `a%2Fb c` — only the `%2F` escape itself
   stays encoded).
+
+### Fixed
+
+- **Invalid response headers are rejected when the config loads** — a header
+  with an invalid name (e.g. containing spaces) or an invalid value (e.g.
+  containing a newline), as well as an empty value list (`X-Empty: []`), is
+  now reported by `mockd validate` and at `serve` startup with the route
+  index. Previously an invalid header could panic while the HTTP response
+  was being built, and an empty list silently suppressed the default
+  `Content-Type`.
 
 ## [0.4.0] - 2026-10-09
 
@@ -217,7 +227,8 @@ tests and CI/CD.
 
 <!-- links -->
 
-[Unreleased]: https://github.com/denislituev/mockd/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/denislituev/mockd/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/denislituev/mockd/releases/tag/v0.5.0
 [0.4.0]: https://github.com/denislituev/mockd/releases/tag/v0.4.0
 [0.3.0]: https://github.com/denislituev/mockd/releases/tag/v0.3.0
 [0.2.0]: https://github.com/denislituev/mockd/releases/tag/v0.2.0
