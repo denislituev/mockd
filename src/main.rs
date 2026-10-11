@@ -5,6 +5,7 @@
 //! ```text
 //! mockd serve <config.yaml>      Start the mock server.
 //! mockd validate <config.yaml>   Check that the config parses and compiles.
+//! mockd generate [dir]           Write the config JSON schema to a directory.
 //! ```
 
 use std::path::PathBuf;
@@ -42,8 +43,13 @@ enum Command {
         /// Path to the YAML configuration file.
         config: PathBuf,
     },
-    /// Generate current JSON schema for the config
-    Generate { path: Option<PathBuf> },
+    /// Generate the JSON schema for the config file and write it to a
+    /// directory as `schema.json`.
+    Generate {
+        /// Directory to write `schema.json` into.
+        #[arg(default_value = "./docs/")]
+        path: PathBuf,
+    },
 }
 
 fn main() -> ExitCode {
@@ -95,9 +101,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             );
         }
         Command::Generate { path } => {
-            let path_dir = path.unwrap_or_else(|| PathBuf::from("./docs/"));
-
-            Config::write_config_schema(&path_dir)?;
+            Config::write_config_schema(&path)?;
         }
     }
     Ok(())
