@@ -146,11 +146,19 @@ when:
       contains: alice                    # substring
   headers:
     X-Tenant-Id: tenant-a
+    X-Environment:
+      contains: staging
   body:
     username: admin
     email:
       matches: ".*@example\\.com$"
 ```
+
+|           | plain string            | `matches:`               | `contains:`              |
+| --------- | ----------------------- | ------------------------ | ------------------------ |
+| `query`   | exact match             | regular expression       | substring                |
+| `headers` | exact match             | regular expression       | substring                |
+| `body`    | literal subset equality | applies to string values | applies to string values |
 
 - `query` / `headers`: each value is one of:
   - a plain string — exact match;
@@ -162,6 +170,10 @@ when:
   error.
 - Header names and exact header values are matched case-insensitively;
   `matches` and `contains` are case-sensitive.
+- Query values and path parameters are percent-decoded before matching and
+  templating: `?name=John%20Doe` matches `name: John Doe` (`+` stays a
+  literal plus sign). A query parameter repeated in the URL
+  (`?role=a&role=b`) matches by its last value.
 - `body`: a JSON pattern that must be a **subset** of the request body. Every
   field you list must be present and equal; extra fields in the request are
   ignored. Arrays must match element-by-element with the same length.
@@ -170,6 +182,8 @@ when:
   string value of the request body (as in the example above). Objects with
   more keys — or non-string values — are literal. Operators never match a
   non-string value in the request body.
+- If the request body is not valid JSON, `body` conditions never match and
+  `{{body.*}}` templates render `null`.
 
 ### `response`
 
