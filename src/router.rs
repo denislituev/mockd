@@ -905,6 +905,53 @@ mod tests {
     }
 
     #[test]
+    fn nested_object_body_subset_matching() {
+        let mut r = route(Method::Post, "/items");
+        r.when = Some(RequestMatch {
+            body: Some(json!({"user": {"name": "alice"}})),
+            ..Default::default()
+        });
+        let router = Router::new(vec![r]).unwrap();
+        let (q, h, _) = empty_inputs();
+
+        let superset = json!({"user": {"name": "alice", "role": "admin"}, "extra": 1});
+        assert!(router
+            .resolve(Method::Post, "/items", &q, &h, &superset)
+            .is_some());
+
+        let mismatch = json!({"user": {"name": "bob"}});
+        assert!(router
+            .resolve(Method::Post, "/items", &q, &h, &mismatch)
+            .is_none());
+    }
+
+    #[test]
+    fn array_body_requires_same_length_and_order() {
+        let mut r = route(Method::Post, "/items");
+        r.when = Some(RequestMatch {
+            body: Some(json!({"tags": ["a", "b"]})),
+            ..Default::default()
+        });
+        let router = Router::new(vec![r]).unwrap();
+        let (q, h, _) = empty_inputs();
+
+        let superset = json!({"tags": ["a", "b"], "other": true});
+        assert!(router
+            .resolve(Method::Post, "/items", &q, &h, &superset)
+            .is_some());
+
+        let reordered = json!({"tags": ["b", "a"]});
+        assert!(router
+            .resolve(Method::Post, "/items", &q, &h, &reordered)
+            .is_none());
+
+        let longer = json!({"tags": ["a", "b", "c"]});
+        assert!(router
+            .resolve(Method::Post, "/items", &q, &h, &longer)
+            .is_none());
+    }
+
+    #[test]
     fn when_block_can_disambiguate_same_path() {
         // Two routes with the same path: the one without `when` is a fallback,
         // the one with `when` is more specific. Declaring the specific one
