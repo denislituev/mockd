@@ -203,6 +203,15 @@ routes:
       body:
         ok: true
 
+  # close_connection: ask the client to close the connection after responding.
+  - method: GET
+    path: /one-shot
+    response:
+      status: 200
+      close_connection: true
+      body:
+        ok: true
+
   # Explicit OPTIONS route (non-preflight OPTIONS requests are routed).
   - method: OPTIONS
     path: /resources
@@ -668,4 +677,105 @@ async fn repeated_set_cookie_headers_are_all_sent() {
         .map(|v| v.to_str().unwrap())
         .collect();
     assert_eq!(cookies, vec!["session=abc; Path=/", "theme=dark; Path=/"]);
+}
+
+#[tokio::test]
+async fn invalid_json_body_falls_back_to_unconditional_route() {
+    let base = spawn().await;
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(format!("{base}/login"))
+        .header("content-type", "application/json")
+        .body("this is not json")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 401);
+}
+
+#[tokio::test]
+async fn empty_request_body_falls_back_to_unconditional_route() {
+    let base = spawn().await;
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(format!("{base}/login"))
+        .body("")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 401);
+}
+
+#[tokio::test]
+async fn invalid_json_body_templates_render_null() {
+    let base = spawn().await;
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(format!("{base}/echo"))
+        .header("content-type", "application/json")
+        .body("{not json")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 201);
+    assert_eq!(
+        body(resp).await,
+        json!({"id": null, "name": null, "echoed": true})
+    );
+}
+
+#[tokio::test]
+async fn head_response_preserves_content_length() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let base = spawn().await;
+    let addr = base.trim_start_matches("http://");
+    let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+    stream
+        .write_all(b"HEAD /health HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+        .await
+        .unwrap();
+    let mut raw = String::new();
+    stream.read_to_string(&mut raw).await.unwrap();
+
+    assert!(raw.starts_with("HTTP/1.1 200"), "got: {raw}");
+    // RFC 9110: HEAD returns the headers a GET would return, including
+    // Content-Length, but no body.
+    let body_len = "{\"ok\":true}".len();
+    assert!(
+        raw.contains(&format!("content-length: {body_len}")),
+        "got: {raw}"
+    );
+    let (_, body) = raw.split_once("\r\n\r\n").unwrap();
+    assert!(body.is_empty(), "HEAD must not send a body, got: {body}");
+}
+
+#[tokio::test]
+async fn repeated_query_parameter_uses_last_value() {
+    let base = spawn().await;
+    let resp = reqwest::get(format!("{base}/users?role=admin&role=guest"))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    assert_eq!(body(resp).await, json!({"admin": false}));
+}
+
+#[tokio::test]
+async fn close_connection_header_is_sent() {
+    let base = spawn().await;
+    let resp = reqwest::get(format!("{base}/one-shot")).await.unwrap();
+    assert_eq!(resp.status(), 200);
+    assert_eq!(resp.headers().get("connection").unwrap(), "close");
+}
+
+#[tokio::test]
+async fn unsupported_method_is_404() {
+    let base = spawn().await;
+    let client = reqwest::Client::new();
+    let resp = client
+        .request(reqwest::Method::TRACE, format!("{base}/health"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 404);
 }
