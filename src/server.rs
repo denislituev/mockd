@@ -22,7 +22,7 @@ use axum::response::IntoResponse;
 use axum::routing::any;
 use serde_json::Value;
 
-use crate::config::{Config, Method};
+use crate::config::{Config, HeaderValues, Method};
 use crate::router::{Match, Router, RouterError};
 use crate::template::{render, TemplateContext};
 
@@ -270,7 +270,7 @@ fn collect_headers(headers: &HeaderMap) -> HashMap<String, String> {
 /// Build an HTTP response from the mockd response definition.
 fn build_response(
     status: u16,
-    headers: &HashMap<String, String>,
+    headers: &HashMap<String, HeaderValues>,
     body: Option<Value>,
     close_connection: bool,
 ) -> Result<Response<Body>, ServerError> {
@@ -282,8 +282,10 @@ fn build_response(
         .keys()
         .any(|k| k.eq_ignore_ascii_case("content-type"));
 
-    for (name, value) in headers {
-        builder = builder.header(name.as_str(), value.as_str());
+    for (name, values) in headers {
+        for value in values.iter_values() {
+            builder = builder.header(name.as_str(), value);
+        }
     }
 
     if close_connection {
@@ -429,7 +431,10 @@ mod tests {
     #[test]
     fn build_response_keeps_explicit_content_type() {
         let mut headers = HashMap::new();
-        headers.insert("Content-Type".to_string(), "text/plain".to_string());
+        headers.insert(
+            "Content-Type".to_string(),
+            HeaderValues::One("text/plain".to_string()),
+        );
         let resp = build_response(200, &headers, Some(Value::String("hi".into())), false).unwrap();
         assert_eq!(
             resp.headers()
@@ -439,6 +444,26 @@ mod tests {
                 .unwrap(),
             "text/plain"
         );
+    }
+
+    #[test]
+    fn build_response_emits_repeated_headers() {
+        let mut headers = HashMap::new();
+        headers.insert(
+            "Set-Cookie".to_string(),
+            HeaderValues::Many(vec![
+                "session=abc; Path=/".to_string(),
+                "theme=dark; Path=/".to_string(),
+            ]),
+        );
+        let resp = build_response(200, &headers, None, false).unwrap();
+        let cookies: Vec<&str> = resp
+            .headers()
+            .get_all("set-cookie")
+            .iter()
+            .map(|v| v.to_str().unwrap())
+            .collect();
+        assert_eq!(cookies, vec!["session=abc; Path=/", "theme=dark; Path=/"]);
     }
 
     #[test]

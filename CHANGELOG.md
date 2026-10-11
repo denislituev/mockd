@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Multiple response headers** — a response header value can now be a list,
+  emitting the header once per value (primarily for `Set-Cookie`):
+
+  ```yaml
+  response:
+    headers:
+      Set-Cookie:
+        - "session=abc; Path=/"
+        - "theme=dark; Path=/"
+  ```
+
+  A plain string keeps setting a single header as before.
+  *Breaking for library users:* `ResponseConfig.headers` is now
+  `HashMap<String, HeaderValues>` instead of `HashMap<String, String>`;
+  the JSON Schema was regenerated accordingly.
+
 ### Changed
 
 - **Percent-decoding of query values and path parameters** —

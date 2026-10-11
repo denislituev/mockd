@@ -162,6 +162,38 @@ pub struct RequestMatch {
 // Response
 // ---------------------------------------------------------------------------
 
+/// One or more values for a response header.
+///
+/// A plain YAML string sets a single value; a list sets the header multiple
+/// times (e.g. several `Set-Cookie` headers):
+///
+/// ```yaml
+/// headers:
+///   Set-Cookie:
+///     - "session=abc; Path=/"
+///     - "theme=dark; Path=/"
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(untagged)]
+pub enum HeaderValues {
+    /// A single header value.
+    One(String),
+    /// Several values for the same header name.
+    Many(Vec<String>),
+}
+
+impl HeaderValues {
+    /// Iterate over the individual values in declaration order.
+    pub fn iter_values(&self) -> impl Iterator<Item = &str> {
+        match self {
+            HeaderValues::One(v) => std::slice::from_ref(v),
+            HeaderValues::Many(vs) => vs.as_slice(),
+        }
+        .iter()
+        .map(|v| v.as_str())
+    }
+}
+
 /// How a matched request should be answered.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct ResponseConfig {
@@ -170,8 +202,11 @@ pub struct ResponseConfig {
     pub status: u16,
 
     /// Response headers.
+    ///
+    /// A value is a single string or a list of strings for repeated headers
+    /// (see [`HeaderValues`]).
     #[serde(default)]
-    pub headers: HashMap<String, String>,
+    pub headers: HashMap<String, HeaderValues>,
 
     /// Response body. Rendered as JSON.
     ///
@@ -506,6 +541,58 @@ routes:
         };
         assert_eq!(resp.status, 200);
         assert_eq!(resp.delay, Some(Duration::from_secs(2)));
+    }
+
+    #[test]
+    fn parses_single_and_multiple_response_headers() {
+        let yaml = r#"
+routes:
+  - method: GET
+    path: /x
+    response:
+      status: 200
+      headers:
+        X-Single: plain
+        Set-Cookie:
+          - "session=abc; Path=/"
+          - "theme=dark; Path=/"
+"#;
+        let cfg = Config::parse(yaml).unwrap();
+        let resp = match &cfg.routes[0].response {
+            ResponseSpec::Single(r) => r,
+            ResponseSpec::Sequence { .. } => panic!("expected Single"),
+        };
+        assert_eq!(
+            resp.headers.get("X-Single").unwrap(),
+            &HeaderValues::One("plain".to_string())
+        );
+        assert_eq!(
+            resp.headers
+                .get("Set-Cookie")
+                .unwrap()
+                .iter_values()
+                .collect::<Vec<_>>(),
+            vec!["session=abc; Path=/", "theme=dark; Path=/"]
+        );
+    }
+
+    #[test]
+    fn multiple_headers_round_trip() {
+        let yaml = r#"
+routes:
+  - method: GET
+    path: /x
+    response:
+      headers:
+        Set-Cookie:
+          - "a=1"
+          - "b=2"
+        X-Single: plain
+"#;
+        let cfg = Config::parse(yaml).unwrap();
+        let reserialized = serde_yaml::to_string(&cfg).unwrap();
+        let cfg2 = Config::parse(&reserialized).unwrap();
+        assert_eq!(cfg, cfg2);
     }
 
     #[test]
