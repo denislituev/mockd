@@ -5,6 +5,41 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.0] - 2026-10-11
+
+First stable release. The YAML configuration format and the library API are
+now considered frozen; future changes will be backward-compatible or
+accompanied by a major version bump.
+
+### Added
+
+- **Edge-case integration tests** — URL encoding (query and path), header
+case-insensitivity, regex and `contains` matchers, multiple response
+headers, empty and invalid-JSON bodies, `HEAD`/`OPTIONS` handling, route
+precedence, nested body matching, and template + matcher combinations.
+- **README examples are tested** — every YAML snippet in the README is
+extracted and validated against the real parser in CI, so the
+documentation cannot silently drift from the configuration format.
+
+### Changed
+
+- **Matcher documentation** — the `when:` reference now covers every
+matcher form with a matrix of exact / `matches` / `contains` across
+query, headers and JSON body fields, including edge behaviors
+(case sensitivity, the one-key rule, non-string body values, repeated
+query parameters).
+- **CLI polish** — exit codes (`0` success, `1` config or runtime error,
+`2` CLI usage error) are documented for CI scripting, and the `generate`
+help describes the directory form and the default output.
+- The library now enforces `#![warn(missing_docs)]`: the entire public API,
+including error variant fields, is documented.
+
+### Known limitations
+
+- Request bodies are parsed as JSON; non-JSON bodies disable `body:`
+matching and `{{body.*}}` template lookups (both resolve to `null`).
+- HTTPS is not supported; terminate TLS at a reverse proxy if needed.
+
 ## [0.5.0] - 2026-10-11
 
 ### Added
@@ -227,7 +262,8 @@ tests and CI/CD.
 
 <!-- links -->
 
-[Unreleased]: https://github.com/denislituev/mockd/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/denislituev/mockd/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/denislituev/mockd/releases/tag/v1.0.0
 [0.5.0]: https://github.com/denislituev/mockd/releases/tag/v0.5.0
 [0.4.0]: https://github.com/denislituev/mockd/releases/tag/v0.4.0
 [0.3.0]: https://github.com/denislituev/mockd/releases/tag/v0.3.0

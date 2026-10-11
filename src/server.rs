@@ -44,7 +44,9 @@ pub enum ServerError {
     /// The configured listen address could not be bound.
     #[error("could not bind to {addr}: {source}")]
     Bind {
+        /// The address that failed to bind.
         addr: String,
+        /// The underlying I/O error.
         #[source]
         source: std::io::Error,
     },
@@ -60,7 +62,12 @@ pub enum ServerError {
     /// A response header has an invalid name, an invalid value or an empty
     /// value list.
     #[error("invalid response header in route {route_index}: {reason}")]
-    InvalidResponseHeader { route_index: usize, reason: String },
+    InvalidResponseHeader {
+        /// Index of the route with the invalid header.
+        route_index: usize,
+        /// What is wrong with the header.
+        reason: String,
+    },
 
     /// A response could not be assembled from already validated parts.
     #[error("could not build response: {0}")]
