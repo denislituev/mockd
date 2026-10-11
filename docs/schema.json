@@ -90,14 +90,49 @@
     },
     "Method": {
       "description": "Supported HTTP methods.\n\nSerialized in upper-case form (`GET`, `POST`, ...) to match the way methods are written in HTTP and in the configuration file.",
-      "type": "string",
-      "enum": [
-        "GET",
-        "POST",
-        "PUT",
-        "PATCH",
-        "DELETE",
-        "OPTIONS"
+      "oneOf": [
+        {
+          "description": "`GET`; also answers `HEAD` requests (same headers, no body).",
+          "type": "string",
+          "enum": [
+            "GET"
+          ]
+        },
+        {
+          "description": "`POST`.",
+          "type": "string",
+          "enum": [
+            "POST"
+          ]
+        },
+        {
+          "description": "`PUT`.",
+          "type": "string",
+          "enum": [
+            "PUT"
+          ]
+        },
+        {
+          "description": "`PATCH`.",
+          "type": "string",
+          "enum": [
+            "PATCH"
+          ]
+        },
+        {
+          "description": "`DELETE`.",
+          "type": "string",
+          "enum": [
+            "DELETE"
+          ]
+        },
+        {
+          "description": "`OPTIONS`; non-preflight requests are routed, CORS preflights are answered by `serve --cors` before routing.",
+          "type": "string",
+          "enum": [
+            "OPTIONS"
+          ]
+        }
       ]
     },
     "RequestMatch": {

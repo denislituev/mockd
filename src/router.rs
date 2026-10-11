@@ -605,7 +605,9 @@ pub enum RouterError {
     /// A route's path pattern could not be compiled.
     #[error("invalid path pattern in route {route_index}: {source}")]
     InvalidPath {
+        /// Index of the route with the invalid pattern.
         route_index: usize,
+        /// The underlying path error.
         #[source]
         source: PathError,
     },
@@ -613,15 +615,21 @@ pub enum RouterError {
     /// A `matches` regex in a `when` block could not be compiled.
     #[error("invalid regex in route {route_index} at {field}: {source}")]
     InvalidRegex {
+        /// Index of the route with the invalid regex.
         route_index: usize,
+        /// Dotted path to the `matches` field, e.g. `when.query.q`.
         field: String,
+        /// The underlying regex error.
         #[source]
         source: regex::Error,
     },
 
     /// A `response.sequence` was empty.
     #[error("empty `sequence` in route {route_index}; expected at least one item")]
-    EmptySequence { route_index: usize },
+    EmptySequence {
+        /// Index of the route with the empty sequence.
+        route_index: usize,
+    },
 }
 
 /// Errors in an individual path pattern.

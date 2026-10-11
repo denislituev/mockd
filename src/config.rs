@@ -36,11 +36,18 @@ use serde_json::Value;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "UPPERCASE")]
 pub enum Method {
+    /// `GET`; also answers `HEAD` requests (same headers, no body).
     Get,
+    /// `POST`.
     Post,
+    /// `PUT`.
     Put,
+    /// `PATCH`.
     Patch,
+    /// `DELETE`.
     Delete,
+    /// `OPTIONS`; non-preflight requests are routed, CORS preflights are
+    /// answered by `serve --cors` before routing.
     Options,
 }
 

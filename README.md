@@ -367,12 +367,16 @@ Unit tests live next to the code (`#[cfg(test)]` modules); end-to-end tests are
 in [`tests/integration.rs`](tests/integration.rs) and spin up a real server on
 an ephemeral port.
 
+## Limitations
+
+Request bodies are parsed as JSON; non-JSON bodies disable `body:` matching
+and `{{body.*}}` template lookups. HTTPS is not supported — terminate TLS
+at a reverse proxy if needed.
+
 ## Roadmap
 
-Planned next releases:
-
-- **1.0 — polish**: CLI UX, full matcher documentation, an edge-case
-  integration test suite, YAML schema freeze
+The 1.0 milestone is complete: the YAML configuration format and the library
+API are considered stable.
 
 Out of scope: GUI/Web UI, database, OpenAPI import, gRPC, GraphQL,
 WebSockets, proxy/passthrough, plugin systems.
