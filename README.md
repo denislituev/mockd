@@ -184,6 +184,18 @@ responses (see [Sequence responses](#sequence-responses) below).
 | `delay`            | duration   | —       | e.g. `2s`, `250ms`, `1m 30s`                           |
 | `close_connection` | bool       | `false` | Send `Connection: close` and close after responding    |
 
+A `headers` value can be a single string or a list to emit the same header
+multiple times (e.g. several `Set-Cookie` headers):
+
+```yaml
+response:
+  status: 200
+  headers:
+    Set-Cookie:
+      - "session=abc; Path=/"
+      - "theme=dark; Path=/"
+```
+
 ### Sequence responses
 
 Wrap multiple responses in `response.sequence:` to make mockd return each one
@@ -342,9 +354,6 @@ an ephemeral port.
 
 Planned next releases:
 
-- **v0.5 — completing the core**: multiple response headers (`Set-Cookie`),
-  percent-decoding of query values and path parameters, minimal non-JSON
-  body support (matching + templates)
 - **1.0 — polish**: CLI UX, full matcher documentation, an edge-case
   integration test suite, YAML schema freeze
 
